@@ -1,0 +1,303 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Plan {
+  free
+  premium
+  family
+}
+
+enum StorageType {
+  s3
+  nas
+  drive
+}
+
+enum DownloadStatus {
+  pending
+  ready
+  expired
+}
+
+enum ActionType {
+  play
+  download
+  skip
+  like
+  add_to_playlist
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model User {
+  id             String      @id @default(uuid())
+  email          String      @unique
+  passwordHash   String      @map("password_hash")
+  name           String?
+  username       String?     @unique
+  bio            String?
+  avatarUrl      String?     @map("avatar_url")
+  coverUrl       String?     @map("cover_url")
+  isPrivate      Boolean     @default(false) @map("is_private")
+  plan           Plan        @default(free)
+  isAdmin        Boolean     @default(false) @map("is_admin")
+  offlineEnabled Boolean     @default(false) @map("offline_enabled")
+  storageType    StorageType @default(s3) @map("storage_type")
+  googleAccessToken  String? @map("google_access_token")
+  googleRefreshToken String? @map("google_refresh_token")
+  premiumExpiresAt   DateTime? @map("premium_expires_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  playlists      Playlist[]
+  downloads      Download[]
+  activityLogs   ActivityLog[]
+  favorites      Favorite[]
+  uploadedSongs  Song[]
+  refreshTokens  RefreshToken[]
+  following      Follow[]    @relation("follower")
+  followers      Follow[]    @relation("following")
+  songLikes      SongLike[]
+  songComments   SongComment[]
+
+  @@map("users")
+}
+
+model Follow {
+  followerId  String   @map("follower_id")
+  followingId String   @map("following_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  follower  User @relation("follower",  fields: [followerId],  references: [id], onDelete: Cascade)
+  following User @relation("following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@id([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+  @@map("follows")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Artist {
+  id        String   @id @default(uuid())
+  name      String
+  imageUrl  String?  @map("image_url")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  albums Album[]
+
+  @@map("artists")
+}
+
+model Album {
+  id        String   @id @default(uuid())
+  artistId  String   @map("artist_id")
+  title     String
+  coverUrl  String?  @map("cover_url")
+  year      Int?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  artist Artist @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  songs  Song[]
+
+  @@map("albums")
+}
+
+model Song {
+  id          String      @id @default(uuid())
+  albumId     String?     @map("album_id")
+  title       String
+  artist      String?
+  albumName   String?     @map("album_name")
+  coverUrl    String?     @map("cover_url")
+  duration    Int
+  bitrate     Int?
+  storageType StorageType @map("storage_type")
+  storagePath String      @map("storage_path")
+  fileSize    BigInt?     @map("file_size")
+  mimeType    String      @default("audio/mpeg") @map("mime_type")
+  uploadedBy  String?     @map("uploaded_by")
+  spotifyId   String?     @map("spotify_id")
+  deezerId    String?     @map("deezer_id")
+  popularity  Int?
+  available   Boolean     @default(true)
+  previewUrl  String?     @map("preview_url")
+  lyrics      String?
+  lyricsSynced String?    @map("lyrics_synced")
+  playCount   Int         @default(0) @map("play_count")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  album         Album?          @relation(fields: [albumId], references: [id], onDelete: SetNull)
+  uploader      User?           @relation(fields: [uploadedBy], references: [id], onDelete: SetNull)
+  playlistSongs PlaylistSong[]
+  downloads     Download[]
+  activityLogs  ActivityLog[]
+  favorites     Favorite[]
+  likes         SongLike[]
+  comments      SongComment[]
+
+  @@index([storagePath])
+  @@map("songs")
+}
+
+model Playlist {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  title     String
+  isPublic  Boolean  @default(false) @map("is_public")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user  User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  songs PlaylistSong[]
+
+  @@map("playlists")
+}
+
+model PlaylistSong {
+  playlistId String   @map("playlist_id")
+  songId     String   @map("song_id")
+  position   Int
+  addedAt    DateTime @default(now()) @map("added_at")
+
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  song     Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@id([playlistId, songId])
+  @@map("playlist_songs")
+}
+
+model Download {
+  id            String         @id @default(uuid())
+  userId        String         @map("user_id")
+  songId        String         @map("song_id")
+  status        DownloadStatus @default(pending)
+  expiresAt     DateTime       @map("expires_at")
+  encryptedPath String?        @map("encrypted_path")
+  createdAt     DateTime       @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  song Song @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, expiresAt])
+  @@map("downloads")
+}
+
+model ActivityLog {
+  id        String     @id @default(uuid())
+  userId    String     @map("user_id")
+  songId    String?    @map("song_id")
+  action    ActionType
+  timestamp DateTime   @default(now())
+  metadata  Json?
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  song Song? @relation(fields: [songId], references: [id], onDelete: SetNull)
+
+  @@map("activity_logs")
+}
+
+model Favorite {
+  userId    String   @map("user_id")
+  songId    String   @map("song_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  song Song @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@id([userId, songId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("favorites")
+}
+
+model SongLike {
+  userId    String   @map("user_id")
+  songId    String   @map("song_id")
+  type      LikeType @default(like)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  song Song @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@id([userId, songId])
+  @@index([songId])
+  @@map("song_likes")
+}
+
+model SongComment {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  songId    String   @map("song_id")
+  text      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  song Song @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@index([songId, createdAt(sort: Desc)])
+  @@map("song_comments")
+}
+
+enum LikeType {
+  like
+  dislike
+}
+
+// ─── Device Connect / Multi-room ─────────────────────────────────────────────
+
+model Device {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  socketId   String   @map("socket_id")          // current WS connection
+  name       String                               // "Chrome on Windows"
+  type       DeviceType @default(browser)
+  isMaster   Boolean  @default(false) @map("is_master")
+  isActive   Boolean  @default(true)  @map("is_active")
+  lastSeen   DateTime @default(now()) @map("last_seen")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("devices")
+}
+
+model PlaybackSession {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")            // room = userId
+  songId      String?  @map("song_id")
+  songUrl     String?  @map("song_url")
+  isPlaying   Boolean  @default(false) @map("is_playing")
+  positionMs  Int      @default(0)    @map("position_ms")
+  startedAt   DateTime @default(now()) @map("started_at")
+  updatedAt   DateTime @updatedAt     @map("updated_at")
+
+  @@unique([userId])
+  @@map("playback_sessions")
+}
+
+enum DeviceType {
+  browser
+  mobile
+  speaker
+  tv
+}

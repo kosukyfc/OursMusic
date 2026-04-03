@@ -1,0 +1,137 @@
+/* ── Connect Button ──────────────────────────────────────── */
+.cb-wrap { position: relative; }
+
+.cb-btn {
+  position: relative;
+  color: #b3b3b3;
+  padding: 6px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  transition: color 0.15s ease, transform 0.15s ease;
+  background: none; border: none; cursor: pointer;
+}
+.cb-btn:hover { color: #fff; transform: scale(1.08); }
+.cb-btn--active { color: #1db954; }
+.cb-btn--active:hover { color: #1ed760; }
+
+.cb-dot {
+  position: absolute;
+  bottom: 4px; right: 4px;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #1db954;
+}
+
+/* ── Backdrop ────────────────────────────────────────────── */
+.cb-backdrop {
+  position: fixed; inset: 0; z-index: 199;
+}
+
+/* ── Modal ───────────────────────────────────────────────── */
+.cb-modal {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  right: 0;
+  width: 280px;
+  background: #282828;
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.8);
+  z-index: 200;
+  overflow: hidden;
+  animation: cb-slide-up 0.15s ease;
+}
+
+@keyframes cb-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.cb-modal__header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 16px 16px;
+  border-bottom: 1px solid #3a3a3a;
+}
+
+.cb-modal__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1db954;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.cb-modal__device-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  margin-top: 2px;
+}
+
+/* Animated sound wave (Spotify-style) */
+.cb-modal__wave {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.cb-modal__wave span {
+  display: block;
+  width: 3px;
+  background: #1db954;
+  border-radius: 2px;
+  animation: cb-wave 1.2s ease-in-out infinite;
+}
+.cb-modal__wave span:nth-child(1) { height: 8px;  animation-delay: 0s; }
+.cb-modal__wave span:nth-child(2) { height: 16px; animation-delay: 0.2s; }
+.cb-modal__wave span:nth-child(3) { height: 12px; animation-delay: 0.4s; }
+.cb-modal__wave span:nth-child(4) { height: 6px;  animation-delay: 0.6s; }
+
+@keyframes cb-wave {
+  0%, 100% { transform: scaleY(0.4); }
+  50%       { transform: scaleY(1); }
+}
+
+/* ── Device list ─────────────────────────────────────────── */
+.cb-modal__list { padding: 8px 0; }
+
+.cb-modal__empty {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 8px; padding: 24px 16px; text-align: center;
+}
+.cb-modal__empty p { font-size: 14px; font-weight: 700; color: #fff; }
+.cb-modal__empty span { font-size: 12px; color: #b3b3b3; }
+
+.cb-device {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 12px 16px;
+  background: none; border: none; cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease;
+  border-radius: 4px;
+  margin: 0 4px;
+  width: calc(100% - 8px);
+}
+.cb-device:hover { background: rgba(255,255,255,.07); }
+.cb-device--active { cursor: default; }
+
+.cb-device__icon { font-size: 20px; flex-shrink: 0; }
+
+.cb-device__info { flex: 1; min-width: 0; }
+.cb-device__name {
+  display: block;
+  font-size: 14px; font-weight: 400; color: #fff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cb-device--active .cb-device__name { color: #1db954; font-weight: 700; }
+
+.cb-device__playing {
+  display: block;
+  font-size: 11px; color: #1db954;
+  margin-top: 2px;
+}
