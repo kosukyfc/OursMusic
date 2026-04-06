@@ -17,6 +17,11 @@ type AuthReq = Request & { user: { userId: string } };
 export class PlaylistsController {
   constructor(private readonly playlistsService: PlaylistsService) {}
 
+  @Get()
+  findAll(@Req() req: AuthReq) {
+    return this.playlistsService.findAll(req.user.userId);
+  }
+
   @Post()
   create(@Req() req: AuthReq, @Body() dto: CreatePlaylistDto) {
     return this.playlistsService.create(req.user.userId, dto);
@@ -35,6 +40,11 @@ export class PlaylistsController {
   @Post(':id/songs')
   addSong(@Param('id') id: string, @Req() req: AuthReq, @Body() dto: AddSongDto) {
     return this.playlistsService.addSong(id, req.user.userId, dto.songId);
+  }
+
+  @Delete(':id/songs/:songId')
+  removeSong(@Param('id') id: string, @Param('songId') songId: string, @Req() req: AuthReq) {
+    return this.playlistsService.removeSong(id, req.user.userId, songId);
   }
 
   @Put(':id/reorder')

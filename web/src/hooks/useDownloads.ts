@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 
-const API = 'http://localhost:3000';
+import { API_URL as API } from '../config';
 
 type DownloadStatus = 'none' | 'downloading' | 'ready';
 
@@ -10,7 +10,6 @@ interface DownloadState {
 
 export function useDownloads(token: string, isPremium: boolean) {
   const [downloads, setDownloads] = useState<DownloadState>({});
-  const [loading, setLoading] = useState(false);
 
   // Load existing downloads on mount
   useEffect(() => {

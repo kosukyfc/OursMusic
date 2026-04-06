@@ -10,6 +10,14 @@ import { CreatePlaylistDto, UpdatePlaylistDto, ReorderItemDto } from './dto/play
 export class PlaylistsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async findAll(userId: string) {
+    return this.prisma.playlist.findMany({
+      where: { userId },
+      orderBy: { updatedAt: 'desc' },
+      include: { songs: { orderBy: { position: 'asc' }, include: { song: true } } },
+    });
+  }
+
   async create(userId: string, dto: CreatePlaylistDto) {
     return this.prisma.playlist.create({
       data: { userId, title: dto.title, isPublic: dto.isPublic ?? false },
@@ -56,6 +64,13 @@ export class PlaylistsService {
         }),
       ),
     );
+  }
+
+  async removeSong(id: string, userId: string, songId: string) {
+    await this.assertOwner(id, userId);
+    await this.prisma.playlistSong.delete({
+      where: { playlistId_songId: { playlistId: id, songId } },
+    });
   }
 
   async remove(id: string, userId: string) {

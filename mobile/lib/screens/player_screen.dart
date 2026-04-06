@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../api.dart';
 import '../theme.dart';
 import '../player/player_controller.dart';
+import '../services/favorites_service.dart';
+import '../widgets/add_to_playlist_sheet.dart';
 
 class PlayerScreen extends StatefulWidget {
   final PlayerController player;
@@ -13,8 +15,7 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen>
     with SingleTickerProviderStateMixin {
   bool _showLyrics = false;
-  bool _isOffline = true;
-  bool _isDownloaded = true;
+  final bool _isOffline = true;
   Map<String, dynamic>? _lyricsData;
   bool _loadingLyrics = false;
   late TabController _tabCtrl;
@@ -79,7 +80,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Future<Map<String, dynamic>> _deleteLike(String songId) async {
-    final res = await Api.post('/songs/$songId/interactions/like', {'_method': 'DELETE'});
+    final res = await Api.post(
+        '/songs/$songId/interactions/like', {'_method': 'DELETE'});
     if (res is Map<String, dynamic>) return res;
     return {};
   }
@@ -90,7 +92,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     try {
       final data = await Api.post('/songs/${song.id}/interactions/save', {});
       if (data is Map<String, dynamic> && mounted) {
-        setState(() => _stats = {...?_stats, 'isSaved': data['saved'], 'songId': song.id});
+        setState(() =>
+            _stats = {...?_stats, 'isSaved': data['saved'], 'songId': song.id});
       }
     } catch (_) {}
   }
@@ -100,7 +103,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (song == null || _commentCtrl.text.trim().isEmpty) return;
     setState(() => _sendingComment = true);
     try {
-      await Api.post('/songs/${song.id}/interactions/comments', {'text': _commentCtrl.text.trim()});
+      await Api.post('/songs/${song.id}/interactions/comments',
+          {'text': _commentCtrl.text.trim()});
       _commentCtrl.clear();
       await _loadComments();
       await _loadStats();
@@ -121,7 +125,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (mounted) setState(() => _loadingLyrics = true);
     try {
       final data = await Api.get('/songs/$songId/lyrics');
-      if (mounted) setState(() { _lyricsData = data; _loadingLyrics = false; });
+      if (mounted) {
+        setState(() {
+          _lyricsData = data;
+          _loadingLyrics = false;
+        });
+      }
     } catch (_) {
       if (mounted) setState(() => _loadingLyrics = false);
     }
@@ -129,7 +138,8 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   @override
   Widget build(BuildContext context) {
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
     final isTablet = MediaQuery.of(context).size.shortestSide >= 600;
 
     return Scaffold(
@@ -138,7 +148,10 @@ class _PlayerScreenState extends State<PlayerScreen>
         listenable: widget.player,
         builder: (context, _) {
           final song = widget.player.current;
-          if (song == null) return const Center(child: Text('No track', style: TextStyle(color: kTextPrimary)));
+          if (song == null) {
+            return const Center(
+                child: Text('No track', style: TextStyle(color: kTextPrimary)));
+          }
 
           if (isTablet && isLandscape) {
             return _buildLandscapeLayout(context, song);
@@ -150,6 +163,98 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   // ── Landscape / tablet layout ─────────────────────────────────────────────
+  void _showSongMenu(BuildContext context, dynamic song) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF282828),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => SafeArea(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 12, bottom: 8),
+          child: Center(
+              child: Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+                color: const Color(0xFF535353),
+                borderRadius: BorderRadius.circular(2)),
+          )),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+          child: Row(children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: song.coverUrl != null
+                  ? Image.network(song.coverUrl!,
+                      width: 48,
+                      height: 48,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => _artPlaceholder())
+                  : _artPlaceholder(),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                  Text(song.title,
+                      style: const TextStyle(
+                          color: kTextPrimary,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis),
+                  Text(song.artist ?? '',
+                      style: const TextStyle(color: kTextSecond, fontSize: 13)),
+                ])),
+          ]),
+        ),
+        const Divider(color: Color(0xFF3A3A3A), height: 1),
+        ListenableBuilder(
+          listenable: favoritesService,
+          builder: (_, __) {
+            final isFav = favoritesService.isFavorite(song.id);
+            return ListTile(
+              leading: Icon(isFav ? Icons.favorite : Icons.favorite_border,
+                  color: isFav ? kAccent : kTextPrimary),
+              title: Text(
+                  isFav ? 'Remover dos favoritos' : 'Adicionar aos favoritos',
+                  style: const TextStyle(color: kTextPrimary)),
+              onTap: () {
+                favoritesService.toggle(song.id);
+                Navigator.pop(context);
+              },
+            );
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.playlist_add, color: kTextPrimary),
+          title: const Text('Adicionar à playlist',
+              style: TextStyle(color: kTextPrimary)),
+          onTap: () {
+            Navigator.pop(context);
+            showModalBottomSheet(
+              context: context,
+              backgroundColor: Colors.transparent,
+              isScrollControlled: true,
+              builder: (_) => AddToPlaylistSheet(songId: song.id),
+            );
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.share_outlined, color: kTextPrimary),
+          title:
+              const Text('Compartilhar', style: TextStyle(color: kTextPrimary)),
+          onTap: () => Navigator.pop(context),
+        ),
+        const SizedBox(height: 8),
+      ])),
+    );
+  }
+
   Widget _buildLandscapeLayout(BuildContext context, dynamic song) {
     return Container(
       decoration: const BoxDecoration(
@@ -169,9 +274,10 @@ class _PlayerScreenState extends State<PlayerScreen>
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: song.coverUrl != null
-                  ? Image.network(song.coverUrl!, fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _artPlaceholder())
-                  : _artPlaceholder(),
+                    ? Image.network(song.coverUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => _artPlaceholder())
+                    : _artPlaceholder(),
               ),
             ),
           ),
@@ -181,44 +287,70 @@ class _PlayerScreenState extends State<PlayerScreen>
             flex: 6,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(0, 24, 32, 24),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                // Top bar
-                Row(children: [
-                  IconButton(
-                    icon: const Icon(Icons.keyboard_arrow_down, size: 28, color: kTextPrimary),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Text('PLAYING FROM PLAYLIST', style: TextStyle(color: kTextSecond, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 1)),
-                    Text(song.albumName ?? 'Music', style: const TextStyle(color: kTextPrimary, fontSize: 13, fontWeight: FontWeight.w700), maxLines: 1, overflow: TextOverflow.ellipsis),
-                  ])),
-                  IconButton(icon: const Icon(Icons.more_vert, color: kTextPrimary), onPressed: () {}),
-                ]),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Top bar
+                    Row(children: [
+                      IconButton(
+                        icon: const Icon(Icons.keyboard_arrow_down,
+                            size: 28, color: kTextPrimary),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                      Expanded(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            const Text('PLAYING FROM PLAYLIST',
+                                style: TextStyle(
+                                    color: kTextSecond,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 1)),
+                            Text(song.albumName ?? 'Music',
+                                style: const TextStyle(
+                                    color: kTextPrimary,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
+                          ])),
+                      IconButton(
+                          icon:
+                              const Icon(Icons.more_vert, color: kTextPrimary),
+                          onPressed: () => _showSongMenu(context, song)),
+                    ]),
 
-                const Spacer(),
+                    // Song info
+                    Text(song.title,
+                        style: const TextStyle(
+                            color: kTextPrimary,
+                            fontSize: 26,
+                            fontWeight: FontWeight.w900),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
+                    const SizedBox(height: 4),
+                    Text(song.artist ?? 'Unknown artist',
+                        style:
+                            const TextStyle(color: kTextSecond, fontSize: 15)),
 
-                // Song info
-                Text(song.title, style: const TextStyle(color: kTextPrimary, fontSize: 26, fontWeight: FontWeight.w900), maxLines: 1, overflow: TextOverflow.ellipsis),
-                const SizedBox(height: 4),
-                Text(song.artist ?? 'Unknown artist', style: const TextStyle(color: kTextSecond, fontSize: 15)),
+                    const SizedBox(height: 24),
 
-                const SizedBox(height: 24),
+                    // Progress
+                    _buildProgress(context),
 
-                // Progress
-                _buildProgress(context),
+                    const SizedBox(height: 16),
 
-                const SizedBox(height: 16),
+                    // Controls
+                    _buildControls(context),
 
-                // Controls
-                _buildControls(context),
+                    const SizedBox(height: 16),
 
-                const SizedBox(height: 16),
+                    // Bottom actions
+                    _buildBottomActions(context, song),
 
-                // Bottom actions
-                _buildBottomActions(context, song),
-
-                const Spacer(),
-              ]),
+                    const Spacer(),
+                  ]),
             ),
           ),
         ]),
@@ -238,165 +370,218 @@ class _PlayerScreenState extends State<PlayerScreen>
         ),
       ),
       child: Column(children: [
-            // ── Status bar ────────────────────────────────────────────────
-            _StatusBar(),
+        // ── Status bar ────────────────────────────────────────────────
+        _StatusBar(),
 
-            // ── Offline banner ────────────────────────────────────────────
-            if (_isOffline)
-              Container(
-                width: double.infinity,
-                color: kAccent.withOpacity(0.15),
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                child: Row(children: [
-                  const Icon(Icons.airplanemode_active, color: kAccent, size: 14),
-                  const SizedBox(width: 6),
-                  const Text('Listening offline • No internet needed',
-                    style: TextStyle(color: kAccent, fontSize: 11, fontWeight: FontWeight.w600)),
-                ]),
-              ),
+        // ── Offline banner ────────────────────────────────────────────
+        if (_isOffline)
+          Container(
+            width: double.infinity,
+            color: kAccent.withValues(alpha: 0.15),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: const Row(children: [
+              Icon(Icons.airplanemode_active, color: kAccent, size: 14),
+              SizedBox(width: 6),
+              Text('Listening offline • No internet needed',
+                  style: TextStyle(
+                      color: kAccent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600)),
+            ]),
+          ),
 
-            // ── Top bar with tabs ─────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Row(children: [
-                IconButton(
-                  icon: const Icon(Icons.keyboard_arrow_down, size: 32, color: kTextPrimary),
-                  onPressed: () => Navigator.pop(context),
-                ),
-                Expanded(child: TabBar(
-                  controller: _tabCtrl,
-                  labelColor: kTextPrimary,
-                  unselectedLabelColor: kTextSecond,
-                  indicatorColor: kTextPrimary,
-                  indicatorSize: TabBarIndicatorSize.label,
-                  labelStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-                  tabs: const [Tab(text: 'Song'), Tab(text: 'Video')],
-                )),
-                IconButton(icon: const Icon(Icons.cast, color: kTextPrimary, size: 22), onPressed: () {}),
-                IconButton(icon: const Icon(Icons.more_vert, color: kTextPrimary), onPressed: () {}),
-              ]),
+        // ── Top bar with tabs ─────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(children: [
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down,
+                  size: 32, color: kTextPrimary),
+              onPressed: () => Navigator.pop(context),
             ),
-
-            // ── Album art ─────────────────────────────────────────────────
             Expanded(
-              flex: _showLyrics ? 0 : 5,
-              child: _showLyrics ? const SizedBox.shrink() : Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 8),
-                child: AspectRatio(
-                  aspectRatio: 1,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: song.coverUrl != null
-                      ? Image.network(song.coverUrl!, fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _greenArt())
-                      : _greenArt(),
+                child: TabBar(
+              controller: _tabCtrl,
+              labelColor: kTextPrimary,
+              unselectedLabelColor: kTextSecond,
+              indicatorColor: kTextPrimary,
+              indicatorSize: TabBarIndicatorSize.label,
+              labelStyle:
+                  const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              tabs: const [Tab(text: 'Song'), Tab(text: 'Video')],
+            )),
+            IconButton(
+                icon: const Icon(Icons.cast, color: kTextPrimary, size: 22),
+                onPressed: () {}),
+            IconButton(
+                icon: const Icon(Icons.more_vert, color: kTextPrimary),
+                onPressed: () => _showSongMenu(context, song)),
+          ]),
+        ),
+
+        // ── Album art ─────────────────────────────────────────────────
+        Expanded(
+          flex: _showLyrics ? 0 : 5,
+          child: _showLyrics
+              ? const SizedBox.shrink()
+              : Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 28, vertical: 8),
+                  child: AspectRatio(
+                    aspectRatio: 1,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: song.coverUrl != null
+                          ? Image.network(song.coverUrl!,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => _greenArt())
+                          : _greenArt(),
+                    ),
                   ),
                 ),
-              ),
-            ),
+        ),
 
-            // ── Lyrics panel ──────────────────────────────────────────────
-            if (_showLyrics)
-              Expanded(
-                flex: 5,
-                child: Container(
-                  margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFB71C1C),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                      const Text('Lyrics', style: TextStyle(color: kTextPrimary, fontSize: 16, fontWeight: FontWeight.w800)),
-                      IconButton(icon: const Icon(Icons.close, color: kTextPrimary, size: 20),
-                        onPressed: () => setState(() => _showLyrics = false)),
-                    ]),
-                    Expanded(child: SingleChildScrollView(
+        // ── Lyrics panel ──────────────────────────────────────────────
+        if (_showLyrics)
+          Expanded(
+            flex: 5,
+            child: Container(
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: const Color(0xFFB71C1C),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text('Lyrics',
+                              style: TextStyle(
+                                  color: kTextPrimary,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800)),
+                          IconButton(
+                              icon: const Icon(Icons.close,
+                                  color: kTextPrimary, size: 20),
+                              onPressed: () =>
+                                  setState(() => _showLyrics = false)),
+                        ]),
+                    Expanded(
+                        child: SingleChildScrollView(
                       child: Text(
                         _lyricsData?['lyrics'] ?? 'Lyrics not available.',
-                        style: const TextStyle(color: kTextPrimary, fontSize: 20, fontWeight: FontWeight.w800, height: 1.6),
+                        style: const TextStyle(
+                            color: kTextPrimary,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            height: 1.6),
                       ),
                     )),
                   ]),
-                ),
-              ),
-
-            // ── Song info ─────────────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(song.title,
-                  style: const TextStyle(color: kTextPrimary, fontSize: 22, fontWeight: FontWeight.w800),
-                  maxLines: 1, overflow: TextOverflow.ellipsis),
-                const SizedBox(height: 2),
-                Text(song.artist ?? 'Unknown artist',
-                  style: const TextStyle(color: kTextSecond, fontSize: 14),
-                  maxLines: 1, overflow: TextOverflow.ellipsis),
-              ]),
             ),
+          ),
 
-            // ── Action row: like / dislike / comments / save ──────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
-              child: Row(children: [
-                _ActionBtn(
-                  icon: Icons.thumb_up_outlined,
-                  activeIcon: Icons.thumb_up,
-                  label: _fmtCount(_stats?['likes'] ?? 0),
-                  active: _stats?['userLike'] == 'like',
-                  onTap: () => _toggleLike('like'),
-                ),
-                const SizedBox(width: 8),
-                _ActionBtn(
-                  icon: Icons.thumb_down_outlined,
-                  activeIcon: Icons.thumb_down,
-                  label: '',
-                  active: _stats?['userLike'] == 'dislike',
-                  onTap: () => _toggleLike('dislike'),
-                ),
-                const SizedBox(width: 8),
-                _ActionBtn(
-                  icon: Icons.comment_outlined,
-                  activeIcon: Icons.comment,
-                  label: _fmtCount(_stats?['comments'] ?? 0),
-                  active: _showComments,
-                  onTap: () {
-                    setState(() { _showComments = !_showComments; _bottomTab = 1; });
-                    if (_showComments) _loadComments();
-                  },
-                ),
-                const SizedBox(width: 8),
-                _ActionBtn(
-                  icon: Icons.bookmark_border,
-                  activeIcon: Icons.bookmark,
-                  label: 'Save',
-                  active: _stats?['isSaved'] == true,
-                  onTap: _toggleSave,
-                ),
-              ]),
+        // ── Song info ─────────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(song.title,
+                style: const TextStyle(
+                    color: kTextPrimary,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 2),
+            Text(song.artist ?? 'Unknown artist',
+                style: const TextStyle(color: kTextSecond, fontSize: 14),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis),
+          ]),
+        ),
+
+        // ── Action row: like / dislike / comments / save ──────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 4),
+          child: Row(children: [
+            _ActionBtn(
+              icon: Icons.thumb_up_outlined,
+              activeIcon: Icons.thumb_up,
+              label: _fmtCount(_stats?['likes'] ?? 0),
+              active: _stats?['userLike'] == 'like',
+              onTap: () => _toggleLike('like'),
             ),
+            const SizedBox(width: 8),
+            _ActionBtn(
+              icon: Icons.thumb_down_outlined,
+              activeIcon: Icons.thumb_down,
+              label: '',
+              active: _stats?['userLike'] == 'dislike',
+              onTap: () => _toggleLike('dislike'),
+            ),
+            const SizedBox(width: 8),
+            _ActionBtn(
+              icon: Icons.comment_outlined,
+              activeIcon: Icons.comment,
+              label: _fmtCount(_stats?['comments'] ?? 0),
+              active: _showComments,
+              onTap: () {
+                setState(() {
+                  _showComments = !_showComments;
+                  _bottomTab = 1;
+                });
+                if (_showComments) _loadComments();
+              },
+            ),
+            const SizedBox(width: 8),
+            _ActionBtn(
+              icon: Icons.bookmark_border,
+              activeIcon: Icons.bookmark,
+              label: 'Save',
+              active: _stats?['isSaved'] == true,
+              onTap: _toggleSave,
+            ),
+          ]),
+        ),
 
-            // ── Comments panel ────────────────────────────────────────────
-            if (_showComments)
-              Expanded(
-                flex: 4,
-                child: Container(
-                  margin: const EdgeInsets.fromLTRB(16, 0, 16, 0),
-                  decoration: BoxDecoration(color: const Color(0xFF1A1A1A), borderRadius: BorderRadius.circular(12)),
-                  child: Column(children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        // ── Comments panel ────────────────────────────────────────────
+        if (_showComments)
+          Expanded(
+            flex: 4,
+            child: Container(
+              margin: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+              decoration: BoxDecoration(
+                  color: const Color(0xFF1A1A1A),
+                  borderRadius: BorderRadius.circular(12)),
+              child: Column(children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
                         Text('${_stats?['comments'] ?? 0} comentarios',
-                          style: const TextStyle(color: kTextPrimary, fontSize: 14, fontWeight: FontWeight.w700)),
-                        IconButton(icon: const Icon(Icons.close, color: kTextMuted, size: 18),
-                          onPressed: () => setState(() => _showComments = false),
-                          padding: EdgeInsets.zero, constraints: const BoxConstraints()),
+                            style: const TextStyle(
+                                color: kTextPrimary,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700)),
+                        IconButton(
+                            icon: const Icon(Icons.close,
+                                color: kTextMuted, size: 18),
+                            onPressed: () =>
+                                setState(() => _showComments = false),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints()),
                       ]),
-                    ),
-                    Expanded(child: _comments.isEmpty
-                      ? const Center(child: Text('Nenhum comentario ainda', style: TextStyle(color: kTextMuted)))
+                ),
+                Expanded(
+                  child: _comments.isEmpty
+                      ? const Center(
+                          child: Text('Nenhum comentario ainda',
+                              style: TextStyle(color: kTextMuted)))
                       : ListView.builder(
                           padding: const EdgeInsets.symmetric(horizontal: 12),
                           itemCount: _comments.length,
@@ -405,84 +590,132 @@ class _PlayerScreenState extends State<PlayerScreen>
                             final user = c['user'] as Map?;
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 12),
-                              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                CircleAvatar(radius: 16, backgroundColor: kAccent,
-                                  child: Text((user?['name'] ?? user?['email'] ?? '?')[0].toUpperCase(),
-                                    style: const TextStyle(color: Colors.black, fontSize: 12, fontWeight: FontWeight.w800))),
-                                const SizedBox(width: 8),
-                                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                  Text(user?['name'] ?? user?['email'] ?? 'Usuario',
-                                    style: const TextStyle(color: kTextPrimary, fontSize: 12, fontWeight: FontWeight.w700)),
-                                  Text(c['text'] ?? '', style: const TextStyle(color: kTextSecond, fontSize: 13)),
-                                ])),
-                              ]),
+                              child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    CircleAvatar(
+                                        radius: 16,
+                                        backgroundColor: kAccent,
+                                        child: Text(
+                                            (user?['name'] ??
+                                                    user?['email'] ??
+                                                    '?')[0]
+                                                .toUpperCase(),
+                                            style: const TextStyle(
+                                                color: Colors.black,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.w800))),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                        child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                          Text(
+                                              user?['name'] ??
+                                                  user?['email'] ??
+                                                  'Usuario',
+                                              style: const TextStyle(
+                                                  color: kTextPrimary,
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w700)),
+                                          Text(c['text'] ?? '',
+                                              style: const TextStyle(
+                                                  color: kTextSecond,
+                                                  fontSize: 13)),
+                                        ])),
+                                  ]),
                             );
                           },
                         ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-                      child: Row(children: [
-                        Expanded(child: TextField(
-                          controller: _commentCtrl,
-                          style: const TextStyle(color: kTextPrimary, fontSize: 13),
-                          decoration: InputDecoration(
-                            hintText: 'Adicionar comentario...',
-                            hintStyle: const TextStyle(color: kTextMuted, fontSize: 13),
-                            filled: true, fillColor: const Color(0xFF2A2A2A),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                          ),
-                        )),
-                        const SizedBox(width: 8),
-                        GestureDetector(
-                          onTap: _sendingComment ? null : _sendComment,
-                          child: Container(
-                            width: 36, height: 36,
-                            decoration: const BoxDecoration(color: kAccent, shape: BoxShape.circle),
-                            child: _sendingComment
-                              ? const Padding(padding: EdgeInsets.all(8), child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2))
-                              : const Icon(Icons.send, color: Colors.black, size: 18),
-                          ),
-                        ),
-                      ]),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                  child: Row(children: [
+                    Expanded(
+                        child: TextField(
+                      controller: _commentCtrl,
+                      style: const TextStyle(color: kTextPrimary, fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: 'Adicionar comentario...',
+                        hintStyle:
+                            const TextStyle(color: kTextMuted, fontSize: 13),
+                        filled: true,
+                        fillColor: const Color(0xFF2A2A2A),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(20),
+                            borderSide: BorderSide.none),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 8),
+                      ),
+                    )),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: _sendingComment ? null : _sendComment,
+                      child: Container(
+                        width: 36,
+                        height: 36,
+                        decoration: const BoxDecoration(
+                            color: kAccent, shape: BoxShape.circle),
+                        child: _sendingComment
+                            ? const Padding(
+                                padding: EdgeInsets.all(8),
+                                child: CircularProgressIndicator(
+                                    color: Colors.black, strokeWidth: 2))
+                            : const Icon(Icons.send,
+                                color: Colors.black, size: 18),
+                      ),
                     ),
                   ]),
                 ),
-              ),
-
-            // ── Progress bar ──────────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-              child: _buildProgress(context),
-            ),
-
-            // ── Controls ──────────────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-              child: _buildControls(context),
-            ),
-
-            // ── Bottom tabs: UP NEXT / LYRICS / RELATED ───────────────────
-            Container(
-              margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.circular(30),
-              ),
-              child: Row(children: [
-                _BottomTab(label: 'UP NEXT', selected: _bottomTab == 0, onTap: () => setState(() => _bottomTab = 0)),
-                _BottomTab(label: 'LYRICS', selected: _bottomTab == 1, onTap: () {
-                  setState(() { _bottomTab = 1; _showLyrics = true; });
-                  _loadLyrics(song.id);
-                }),
-                _BottomTab(label: 'RELATED', selected: _bottomTab == 2, onTap: () => setState(() => _bottomTab = 2)),
               ]),
             ),
+          ),
 
-            const SizedBox(height: 8),
+        // ── Progress bar ──────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+          child: _buildProgress(context),
+        ),
+
+        // ── Controls ──────────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+          child: _buildControls(context),
+        ),
+
+        // ── Bottom tabs: UP NEXT / LYRICS / RELATED ───────────────────
+        Container(
+          margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1A1A),
+            borderRadius: BorderRadius.circular(30),
+          ),
+          child: Row(children: [
+            _BottomTab(
+                label: 'UP NEXT',
+                selected: _bottomTab == 0,
+                onTap: () => setState(() => _bottomTab = 0)),
+            _BottomTab(
+                label: 'LYRICS',
+                selected: _bottomTab == 1,
+                onTap: () {
+                  setState(() {
+                    _bottomTab = 1;
+                    _showLyrics = true;
+                  });
+                  _loadLyrics(song.id);
+                }),
+            _BottomTab(
+                label: 'RELATED',
+                selected: _bottomTab == 2,
+                onTap: () => setState(() => _bottomTab = 2)),
           ]),
-        );
+        ),
+
+        const SizedBox(height: 8),
+      ]),
+    );
   }
 
   String _fmtCount(int n) {
@@ -492,14 +725,14 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Widget _greenArt() => Container(
-    color: kAccent,
-    child: const Icon(Icons.music_note, color: Colors.black, size: 80),
-  );
+        color: kAccent,
+        child: const Icon(Icons.music_note, color: Colors.black, size: 80),
+      );
 
   Widget _artPlaceholder() => Container(
-    color: const Color(0xFF2A2A2A),
-    child: const Icon(Icons.music_note, size: 80, color: kTextMuted),
-  );
+        color: const Color(0xFF2A2A2A),
+        child: const Icon(Icons.music_note, size: 80, color: kTextMuted),
+      );
 
   Widget _buildProgress(BuildContext context) {
     return Column(children: [
@@ -512,13 +745,18 @@ class _PlayerScreenState extends State<PlayerScreen>
           trackHeight: 4,
           overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
         ),
-        child: Slider(value: widget.player.progress.clamp(0.0, 1.0), onChanged: widget.player.seek),
+        child: Slider(
+            value: widget.player.progress.clamp(0.0, 1.0),
+            onChanged: widget.player.seek),
       ),
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text(_fmt(widget.player.position), style: const TextStyle(color: kTextMuted, fontSize: 11)),
-          Text(_fmt(widget.player.duration), style: const TextStyle(color: kTextMuted, fontSize: 11)),
+        child:
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text(_fmt(widget.player.position),
+              style: const TextStyle(color: kTextMuted, fontSize: 11)),
+          Text(_fmt(widget.player.duration),
+              style: const TextStyle(color: kTextMuted, fontSize: 11)),
         ]),
       ),
     ]);
@@ -526,20 +764,34 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Widget _buildControls(BuildContext context) {
     return Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-      IconButton(icon: Icon(Icons.shuffle, color: widget.player.shuffle ? kAccent : kTextSecond, size: 22), onPressed: widget.player.toggleShuffle),
-      IconButton(icon: const Icon(Icons.skip_previous, color: kTextPrimary, size: 40), onPressed: widget.player.skipPrev),
+      IconButton(
+          icon: Icon(Icons.shuffle,
+              color: widget.player.shuffle ? kAccent : kTextSecond, size: 22),
+          onPressed: widget.player.toggleShuffle),
+      IconButton(
+          icon: const Icon(Icons.skip_previous, color: kTextPrimary, size: 40),
+          onPressed: widget.player.skipPrev),
       GestureDetector(
         onTap: widget.player.togglePlay,
         child: Container(
-          width: 64, height: 64,
-          decoration: const BoxDecoration(color: kTextPrimary, shape: BoxShape.circle),
-          child: Icon(widget.player.playing ? Icons.pause : Icons.play_arrow, color: Colors.black, size: 38),
+          width: 64,
+          height: 64,
+          decoration:
+              const BoxDecoration(color: kTextPrimary, shape: BoxShape.circle),
+          child: Icon(widget.player.playing ? Icons.pause : Icons.play_arrow,
+              color: Colors.black, size: 38),
         ),
       ),
-      IconButton(icon: const Icon(Icons.skip_next, color: kTextPrimary, size: 40), onPressed: widget.player.skipNext),
       IconButton(
-        icon: Icon(widget.player.repeat == LoopMode.one ? Icons.repeat_one : Icons.repeat,
-          color: widget.player.repeat != LoopMode.off ? kAccent : kTextSecond, size: 22),
+          icon: const Icon(Icons.skip_next, color: kTextPrimary, size: 40),
+          onPressed: widget.player.skipNext),
+      IconButton(
+        icon: Icon(
+            widget.player.repeat == LoopMode.one
+                ? Icons.repeat_one
+                : Icons.repeat,
+            color: widget.player.repeat != LoopMode.off ? kAccent : kTextSecond,
+            size: 22),
         onPressed: widget.player.cycleRepeat,
       ),
     ]);
@@ -547,30 +799,177 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Widget _buildBottomActions(BuildContext context, dynamic song) {
     return Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-      IconButton(icon: const Icon(Icons.devices_other, color: kTextSecond, size: 20), onPressed: () {}),
+      IconButton(
+        icon: const Icon(Icons.devices_other, color: kTextSecond, size: 20),
+        onPressed: () => _showDevicesSheet(context),
+      ),
       Row(children: [
         const Icon(Icons.volume_down, color: kTextSecond, size: 18),
-        SizedBox(width: 80, child: SliderTheme(
-          data: SliderTheme.of(context).copyWith(
-            activeTrackColor: kTextSecond,
-            inactiveTrackColor: const Color(0xFF4A4A4A),
-            thumbColor: kTextPrimary,
-            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
-            trackHeight: 3,
-          ),
-          child: Slider(value: widget.player.volume, onChanged: widget.player.setVolume),
-        )),
+        SizedBox(
+            width: 80,
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                activeTrackColor: kTextSecond,
+                inactiveTrackColor: const Color(0xFF4A4A4A),
+                thumbColor: kTextPrimary,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                trackHeight: 3,
+              ),
+              child: Slider(
+                  value: widget.player.volume,
+                  onChanged: widget.player.setVolume),
+            )),
         const Icon(Icons.volume_up, color: kTextSecond, size: 18),
       ]),
       IconButton(
-        icon: Icon(Icons.lyrics_outlined, color: _showLyrics ? kAccent : kTextSecond, size: 20),
+        icon: Icon(Icons.lyrics_outlined,
+            color: _showLyrics ? kAccent : kTextSecond, size: 20),
         onPressed: () {
           setState(() => _showLyrics = !_showLyrics);
           if (_showLyrics && song != null) _loadLyrics(song.id);
         },
       ),
-      IconButton(icon: const Icon(Icons.queue_music, color: kTextSecond, size: 20), onPressed: () {}),
+      IconButton(
+        icon: const Icon(Icons.queue_music, color: kTextSecond, size: 20),
+        onPressed: () => _showQueueSheet(context),
+      ),
     ]);
+  }
+
+  void _showDevicesSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF282828),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => SafeArea(
+          child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Center(
+              child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: const Color(0xFF535353),
+                      borderRadius: BorderRadius.circular(2)))),
+          const SizedBox(height: 16),
+          const Text('Dispositivos',
+              style: TextStyle(
+                  color: kTextPrimary,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800)),
+          const SizedBox(height: 16),
+          const ListTile(
+            leading: Icon(Icons.phone_android, color: kAccent),
+            title:
+                Text('Este dispositivo', style: TextStyle(color: kTextPrimary)),
+            subtitle: Text('Conectado',
+                style: TextStyle(color: kAccent, fontSize: 12)),
+            trailing: Icon(Icons.check, color: kAccent),
+          ),
+          const SizedBox(height: 8),
+          const Text('Outros dispositivos aparecerão aqui quando conectados.',
+              style: TextStyle(color: kTextMuted, fontSize: 12),
+              textAlign: TextAlign.center),
+          const SizedBox(height: 8),
+        ]),
+      )),
+    );
+  }
+
+  void _showQueueSheet(BuildContext context) {
+    final queue = widget.player.queue;
+    final current = widget.player.current;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF282828),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      isScrollControlled: true,
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (ctx, scrollCtrl) => Column(children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 12, bottom: 8),
+            child: Center(
+                child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                        color: const Color(0xFF535353),
+                        borderRadius: BorderRadius.circular(2)))),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 4, 20, 12),
+            child: Text('Próximas músicas',
+                style: TextStyle(
+                    color: kTextPrimary,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800)),
+          ),
+          Expanded(
+            child: queue.isEmpty
+                ? const Center(
+                    child:
+                        Text('Fila vazia', style: TextStyle(color: kTextMuted)))
+                : ListView.builder(
+                    controller: scrollCtrl,
+                    itemCount: queue.length,
+                    itemBuilder: (ctx, i) {
+                      final song = queue[i];
+                      final isCurrent = current?.id == song.id;
+                      return ListTile(
+                        leading: ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: song.coverUrl != null
+                              ? Image.network(song.coverUrl!,
+                                  width: 44,
+                                  height: 44,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => Container(
+                                      width: 44,
+                                      height: 44,
+                                      color: const Color(0xFF2A2A2A),
+                                      child: const Icon(Icons.music_note,
+                                          color: kTextMuted, size: 20)))
+                              : Container(
+                                  width: 44,
+                                  height: 44,
+                                  color: const Color(0xFF2A2A2A),
+                                  child: const Icon(Icons.music_note,
+                                      color: kTextMuted, size: 20)),
+                        ),
+                        title: Text(song.title,
+                            style: TextStyle(
+                                color: isCurrent ? kAccent : kTextPrimary,
+                                fontSize: 14,
+                                fontWeight: isCurrent
+                                    ? FontWeight.w700
+                                    : FontWeight.w500),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis),
+                        subtitle: Text(song.artist ?? '',
+                            style: const TextStyle(
+                                color: kTextMuted, fontSize: 12)),
+                        trailing: isCurrent
+                            ? const Icon(Icons.equalizer,
+                                color: kAccent, size: 18)
+                            : null,
+                        onTap: () {
+                          widget.player.play(song, queue);
+                          Navigator.pop(ctx);
+                        },
+                      );
+                    },
+                  ),
+          ),
+        ]),
+      ),
+    );
   }
 
   String _fmt(Duration d) {
@@ -586,16 +985,22 @@ class _StatusBar extends StatelessWidget {
     return Container(
       color: kBgBase,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        const Text('2:22', style: TextStyle(color: kTextPrimary, fontSize: 12, fontWeight: FontWeight.w700)),
-        Row(children: [
-          const Icon(Icons.signal_cellular_alt, color: kTextPrimary, size: 14),
-          const SizedBox(width: 4),
-          const Icon(Icons.wifi, color: kTextPrimary, size: 14),
-          const SizedBox(width: 4),
-          const Icon(Icons.battery_full, color: kTextPrimary, size: 14),
-        ]),
-      ]),
+      child: const Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('2:22',
+                style: TextStyle(
+                    color: kTextPrimary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700)),
+            Row(children: [
+              Icon(Icons.signal_cellular_alt, color: kTextPrimary, size: 14),
+              SizedBox(width: 4),
+              Icon(Icons.wifi, color: kTextPrimary, size: 14),
+              SizedBox(width: 4),
+              Icon(Icons.battery_full, color: kTextPrimary, size: 14),
+            ]),
+          ]),
     );
   }
 }
@@ -607,7 +1012,12 @@ class _ActionBtn extends StatelessWidget {
   final String label;
   final bool active;
   final VoidCallback onTap;
-  const _ActionBtn({required this.icon, this.activeIcon, required this.label, this.active = false, required this.onTap});
+  const _ActionBtn(
+      {required this.icon,
+      this.activeIcon,
+      required this.label,
+      this.active = false,
+      required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -617,18 +1027,22 @@ class _ActionBtn extends StatelessWidget {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: active ? kAccent.withOpacity(0.2) : const Color(0xFF2A2A2A),
+          color:
+              active ? kAccent.withValues(alpha: 0.2) : const Color(0xFF2A2A2A),
           borderRadius: BorderRadius.circular(20),
-          border: active ? Border.all(color: kAccent.withOpacity(0.5)) : null,
+          border:
+              active ? Border.all(color: kAccent.withValues(alpha: 0.5)) : null,
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           Icon(active && activeIcon != null ? activeIcon! : icon,
-            color: active ? kAccent : kTextPrimary, size: 18),
+              color: active ? kAccent : kTextPrimary, size: 18),
           if (label.isNotEmpty) ...[
             const SizedBox(width: 6),
-            Text(label, style: TextStyle(
-              color: active ? kAccent : kTextPrimary,
-              fontSize: 13, fontWeight: FontWeight.w600)),
+            Text(label,
+                style: TextStyle(
+                    color: active ? kAccent : kTextPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600)),
           ],
         ]),
       ),
@@ -641,7 +1055,8 @@ class _BottomTab extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback onTap;
-  const _BottomTab({required this.label, required this.selected, required this.onTap});
+  const _BottomTab(
+      {required this.label, required this.selected, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -654,10 +1069,13 @@ class _BottomTab extends StatelessWidget {
             color: selected ? const Color(0xFF3A3A3A) : Colors.transparent,
             borderRadius: BorderRadius.circular(30),
           ),
-          child: Text(label, textAlign: TextAlign.center,
-            style: TextStyle(
-              color: selected ? kTextPrimary : kTextSecond,
-              fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+          child: Text(label,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  color: selected ? kTextPrimary : kTextSecond,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.5)),
         ),
       ),
     );

@@ -12,7 +12,7 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _emailCtrl = TextEditingController();
-  final _passCtrl  = TextEditingController();
+  final _passCtrl = TextEditingController();
   bool _loading = false;
   String? _error;
   bool _register = false;
@@ -23,7 +23,10 @@ class _LoginScreenState extends State<LoginScreen> {
       setState(() => _error = 'Preencha todos os campos.');
       return;
     }
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       final path = _register ? '/auth/register' : '/auth/login';
       final data = await Api.post(path, {
@@ -31,7 +34,8 @@ class _LoginScreenState extends State<LoginScreen> {
         'password': _passCtrl.text,
       });
       final token = data?['access_token']?.toString();
-      if (token != null) await Api.saveToken(token);
+      final refresh = data?['refresh_token']?.toString();
+      if (token != null) await Api.saveTokens(token, refresh);
       if (!mounted) return;
       if (_register && widget.onRegister != null) {
         widget.onRegister!();
@@ -39,7 +43,9 @@ class _LoginScreenState extends State<LoginScreen> {
         widget.onLogin();
       }
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      if (mounted) {
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -52,14 +58,19 @@ class _LoginScreenState extends State<LoginScreen> {
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             const SizedBox(height: 24),
 
             // ── Logo ──────────────────────────────────────────────────────
-            Center(child: Container(
-              width: 80, height: 80,
-              decoration: const BoxDecoration(color: kAccent, shape: BoxShape.circle),
-              child: const Icon(Icons.play_arrow_rounded, color: Colors.black, size: 48),
+            Center(
+                child: Container(
+              width: 80,
+              height: 80,
+              decoration:
+                  const BoxDecoration(color: kAccent, shape: BoxShape.circle),
+              child: const Icon(Icons.play_arrow_rounded,
+                  color: Colors.black, size: 48),
             )),
             const SizedBox(height: 16),
             Text(
@@ -94,15 +105,20 @@ class _LoginScreenState extends State<LoginScreen> {
             if (_error != null) ...[
               const SizedBox(height: 12),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color: const Color(0xFF2A0808),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(children: [
-                  const Icon(Icons.error_outline, color: Color(0xFFF15E6C), size: 16),
+                  const Icon(Icons.error_outline,
+                      color: Color(0xFFF15E6C), size: 16),
                   const SizedBox(width: 8),
-                  Expanded(child: Text(_error!, style: const TextStyle(color: Color(0xFFF15E6C), fontSize: 13))),
+                  Expanded(
+                      child: Text(_error!,
+                          style: const TextStyle(
+                              color: Color(0xFFF15E6C), fontSize: 13))),
                 ]),
               ),
             ],
@@ -116,44 +132,51 @@ class _LoginScreenState extends State<LoginScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: kAccent,
                   foregroundColor: Colors.black,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  textStyle: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w800),
                 ),
                 child: _loading
-                    ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.black))
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2.5, color: Colors.black))
                     : Text(_register ? 'Criar conta' : 'Entrar'),
               ),
             ),
             const SizedBox(height: 20),
 
             // ── Divisor ───────────────────────────────────────────────────
-            Row(children: [
-              const Expanded(child: Divider(color: Color(0xFF3A3A3A))),
+            const Row(children: [
+              Expanded(child: Divider(color: Color(0xFF3A3A3A))),
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Text('ou continue com', style: const TextStyle(color: kTextMuted, fontSize: 12)),
+                padding: EdgeInsets.symmetric(horizontal: 12),
+                child: Text('ou continue com',
+                    style: TextStyle(color: kTextMuted, fontSize: 12)),
               ),
-              const Expanded(child: Divider(color: Color(0xFF3A3A3A))),
+              Expanded(child: Divider(color: Color(0xFF3A3A3A))),
             ]),
             const SizedBox(height: 16),
 
-            // ── Botões sociais (desabilitados — TODO: configurar integração) ──
-            Row(children: [
-              Expanded(child: _SocialButton(
-                label: 'Facebook',
-                icon: _FacebookIcon(),
-                // TODO: Configurar login com Facebook
-                onTap: null,
-              )),
-              const SizedBox(width: 12),
-              Expanded(child: _SocialButton(
-                label: 'Google',
-                icon: _GoogleIcon(),
-                // TODO: Configurar login com Google
-                onTap: null,
-              )),
-            ]),
-            const SizedBox(height: 24),
+            // ── Botões sociais (desabilitados — integração pendente) ──
+            // Row(children: [
+            //   Expanded(
+            //       child: _SocialButton(
+            //     label: 'Facebook',
+            //     icon: _FacebookIcon(),
+            //     onTap: null,
+            //   )),
+            //   const SizedBox(width: 12),
+            //   Expanded(
+            //       child: _SocialButton(
+            //     label: 'Google',
+            //     icon: _GoogleIcon(),
+            //     onTap: null,
+            //   )),
+            // ]),
+            // const SizedBox(height: 24),
 
             // ── Toggle login/cadastro ─────────────────────────────────────
             Row(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -162,10 +185,16 @@ class _LoginScreenState extends State<LoginScreen> {
                 style: const TextStyle(color: kTextSecond, fontSize: 14),
               ),
               GestureDetector(
-                onTap: () => setState(() { _register = !_register; _error = null; }),
+                onTap: () => setState(() {
+                  _register = !_register;
+                  _error = null;
+                }),
                 child: Text(
                   _register ? 'Entrar' : 'Cadastre-se',
-                  style: const TextStyle(color: kAccent, fontSize: 14, fontWeight: FontWeight.w800),
+                  style: const TextStyle(
+                      color: kAccent,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800),
                 ),
               ),
             ]),
@@ -193,23 +222,26 @@ class _InputField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => TextField(
-    controller: controller,
-    keyboardType: keyboardType,
-    style: const TextStyle(color: kTextPrimary),
-    decoration: InputDecoration(
-      labelText: label,
-      labelStyle: const TextStyle(color: kTextMuted),
-      prefixIcon: Icon(icon, color: kTextMuted, size: 20),
-      filled: true,
-      fillColor: kBgHighlight,
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: kAccent, width: 1.5),
-      ),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-    ),
-  );
+        controller: controller,
+        keyboardType: keyboardType,
+        style: const TextStyle(color: kTextPrimary),
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: kTextMuted),
+          prefixIcon: Icon(icon, color: kTextMuted, size: 20),
+          filled: true,
+          fillColor: kBgHighlight,
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide.none),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: kAccent, width: 1.5),
+          ),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        ),
+      );
 }
 
 // ── Campo de senha com toggle de visibilidade ─────────────────────────────────
@@ -228,120 +260,109 @@ class _PasswordField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => TextField(
-    controller: controller,
-    obscureText: !showPassword,
-    style: const TextStyle(color: kTextPrimary),
-    decoration: InputDecoration(
-      labelText: label,
-      labelStyle: const TextStyle(color: kTextMuted),
-      prefixIcon: const Icon(Icons.lock_outline, color: kTextMuted, size: 20),
-      // Ícone de olho para mostrar/esconder senha
-      suffixIcon: IconButton(
-        icon: Icon(
-          showPassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-          color: kTextMuted,
-          size: 20,
-        ),
-        onPressed: onToggle,
-        tooltip: showPassword ? 'Esconder senha' : 'Mostrar senha',
-      ),
-      filled: true,
-      fillColor: kBgHighlight,
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: kAccent, width: 1.5),
-      ),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-    ),
-  );
-}
-
-// ── Botão de login social ─────────────────────────────────────────────────────
-class _SocialButton extends StatelessWidget {
-  final String label;
-  final Widget icon;
-  final VoidCallback? onTap; // null = desabilitado
-
-  const _SocialButton({required this.label, required this.icon, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final enabled = onTap != null;
-    return Opacity(
-      opacity: enabled ? 1.0 : 0.45,
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          height: 48,
-          decoration: BoxDecoration(
-            color: kBgHighlight,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF3A3A3A)),
+        controller: controller,
+        obscureText: !showPassword,
+        style: const TextStyle(color: kTextPrimary),
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: kTextMuted),
+          prefixIcon:
+              const Icon(Icons.lock_outline, color: kTextMuted, size: 20),
+          // Ícone de olho para mostrar/esconder senha
+          suffixIcon: IconButton(
+            icon: Icon(
+              showPassword
+                  ? Icons.visibility_off_outlined
+                  : Icons.visibility_outlined,
+              color: kTextMuted,
+              size: 20,
+            ),
+            onPressed: onToggle,
+            tooltip: showPassword ? 'Esconder senha' : 'Mostrar senha',
           ),
-          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            SizedBox(width: 20, height: 20, child: icon),
-            const SizedBox(width: 8),
-            Text(label, style: const TextStyle(color: kTextPrimary, fontSize: 13, fontWeight: FontWeight.w600)),
-          ]),
+          filled: true,
+          fillColor: kBgHighlight,
+          border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide.none),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: kAccent, width: 1.5),
+          ),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         ),
-      ),
-    );
-  }
-}
-
-// ── Ícone do Facebook ─────────────────────────────────────────────────────────
-class _FacebookIcon extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) => CustomPaint(
-    painter: _FbPainter(),
-  );
-}
-
-class _FbPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = const Color(0xFF1877F2);
-    canvas.drawCircle(Offset(size.width / 2, size.height / 2), size.width / 2, paint);
-    final textPainter = TextPainter(
-      text: const TextSpan(text: 'f', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w900, fontFamily: 'Roboto')),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    textPainter.paint(canvas, Offset((size.width - textPainter.width) / 2, (size.height - textPainter.height) / 2));
-  }
-  @override
-  bool shouldRepaint(_) => false;
-}
-
-// ── Ícone do Google ───────────────────────────────────────────────────────────
-class _GoogleIcon extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) => CustomPaint(painter: _GooglePainter());
-}
-
-class _GooglePainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cx = size.width / 2;
-    final cy = size.height / 2;
-    final r = size.width / 2;
-
-    // Arcos coloridos do Google
-    final colors = [const Color(0xFF4285F4), const Color(0xFF34A853), const Color(0xFFFBBC05), const Color(0xFFEA4335)];
-    for (int i = 0; i < 4; i++) {
-      final paint = Paint()
-        ..color = colors[i]
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3;
-      canvas.drawArc(
-        Rect.fromCircle(center: Offset(cx, cy), radius: r - 1.5),
-        (i * 3.14159 / 2) - 0.3,
-        3.14159 / 2 + 0.3,
-        false,
-        paint,
       );
-    }
-  }
-  @override
-  bool shouldRepaint(_) => false;
 }
+
+// ── Botão de login social (comentado — integração pendente) ──────────────────
+// class _SocialButton extends StatelessWidget {
+//   final String label;
+//   final Widget icon;
+//   final VoidCallback? onTap;
+//   const _SocialButton({required this.label, required this.icon, required this.onTap});
+//   @override
+//   Widget build(BuildContext context) {
+//     final enabled = onTap != null;
+//     return Opacity(
+//       opacity: enabled ? 1.0 : 0.45,
+//       child: GestureDetector(
+//         onTap: onTap,
+//         child: Container(
+//           height: 48,
+//           decoration: BoxDecoration(
+//             color: kBgHighlight,
+//             borderRadius: BorderRadius.circular(10),
+//             border: Border.all(color: const Color(0xFF3A3A3A)),
+//           ),
+//           child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+//             SizedBox(width: 20, height: 20, child: icon),
+//             const SizedBox(width: 8),
+//             Text(label, style: const TextStyle(color: kTextPrimary, fontSize: 13, fontWeight: FontWeight.w600)),
+//           ]),
+//         ),
+//       ),
+//     );
+//   }
+// }
+
+// ── Ícone do Facebook (comentado — integração pendente) ───────────────────────
+// class _FacebookIcon extends StatelessWidget {
+//   @override
+//   Widget build(BuildContext context) => CustomPaint(painter: _FbPainter());
+// }
+// class _FbPainter extends CustomPainter {
+//   @override
+//   void paint(Canvas canvas, Size size) {
+//     final paint = Paint()..color = const Color(0xFF1877F2);
+//     canvas.drawCircle(Offset(size.width / 2, size.height / 2), size.width / 2, paint);
+//     final textPainter = TextPainter(
+//       text: const TextSpan(text: 'f', style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w900, fontFamily: 'Roboto')),
+//       textDirection: TextDirection.ltr,
+//     )..layout();
+//     textPainter.paint(canvas, Offset((size.width - textPainter.width) / 2, (size.height - textPainter.height) / 2));
+//   }
+//   @override
+//   bool shouldRepaint(_) => false;
+// }
+
+// ── Ícone do Google (comentado — integração pendente) ─────────────────────────
+// class _GoogleIcon extends StatelessWidget {
+//   @override
+//   Widget build(BuildContext context) => CustomPaint(painter: _GooglePainter());
+// }
+// class _GooglePainter extends CustomPainter {
+//   @override
+//   void paint(Canvas canvas, Size size) {
+//     final cx = size.width / 2;
+//     final cy = size.height / 2;
+//     final r = size.width / 2;
+//     final colors = [const Color(0xFF4285F4), const Color(0xFF34A853), const Color(0xFFFBBC05), const Color(0xFFEA4335)];
+//     for (int i = 0; i < 4; i++) {
+//       final paint = Paint()..color = colors[i]..style = PaintingStyle.stroke..strokeWidth = 3;
+//       canvas.drawArc(Rect.fromCircle(center: Offset(cx, cy), radius: r - 1.5), (i * 3.14159 / 2) - 0.3, 3.14159 / 2 + 0.3, false, paint);
+//     }
+//   }
+//   @override
+//   bool shouldRepaint(_) => false;
+// }

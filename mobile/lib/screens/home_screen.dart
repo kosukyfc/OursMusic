@@ -7,6 +7,8 @@ import 'search_screen.dart';
 import 'library_screen.dart';
 import '../player/player_controller.dart';
 import '../services/download_service.dart';
+import '../services/favorites_service.dart';
+import '../services/device_sync_service.dart';
 import 'profile_screen.dart';
 import 'player_screen.dart';
 
@@ -24,14 +26,18 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _offlineMode = false;
   final _player = PlayerController();
   final _downloads = DownloadService();
+  late final DeviceSyncService _deviceSync;
   String _userPlan = 'free';
 
   @override
   void initState() {
     super.initState();
+    _deviceSync = DeviceSyncService(_player);
+    _deviceSync.connect();
     _loadSongs();
     _downloads.loadDownloads();
     _loadUserPlan();
+    favoritesService.load();
   }
 
   Future<void> _loadUserPlan() async {
@@ -41,6 +47,13 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() => _userPlan = data['plan']?.toString() ?? 'free');
       }
     } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _deviceSync.dispose();
+    _player.dispose();
+    super.dispose();
   }
 
   Future<void> _loadSongs() async {
@@ -76,10 +89,15 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── Phone layout ──────────────────────────────────────────────────────────
   Widget _buildPhoneLayout() {
     final tabs = [
-      _HomeContent(songs: _songs, loading: _loading, player: _player,
-        downloads: _downloads, userPlan: _userPlan,
-        onLogout: widget.onLogout, offlineMode: _offlineMode,
-        onToggleOffline: () => setState(() => _offlineMode = !_offlineMode)),
+      _HomeContent(
+          songs: _songs,
+          loading: _loading,
+          player: _player,
+          downloads: _downloads,
+          userPlan: _userPlan,
+          onLogout: widget.onLogout,
+          offlineMode: _offlineMode,
+          onToggleOffline: () => setState(() => _offlineMode = !_offlineMode)),
       SearchScreen(songs: _songs, player: _player),
       LibraryScreen(songs: _songs, player: _player),
     ];
@@ -89,27 +107,34 @@ class _HomeScreenState extends State<HomeScreen> {
       body: Stack(children: [
         tabs[_tab],
         Positioned(
-          left: 0, right: 0,
+          left: 0,
+          right: 0,
           bottom: kBottomNavigationBarHeight,
           child: ListenableBuilder(
             listenable: _player,
             builder: (_, __) => _player.current != null
-              ? MiniPlayer(player: _player)
-              : const SizedBox.shrink(),
+                ? MiniPlayer(player: _player)
+                : const SizedBox.shrink(),
           ),
         ),
       ]),
-      bottomNavigationBar: _BottomNav(current: _tab, onTap: (i) => setState(() => _tab = i)),
+      bottomNavigationBar:
+          _BottomNav(current: _tab, onTap: (i) => setState(() => _tab = i)),
     );
   }
 
   // ── Tablet layout — sidebar + content (Spotify 2026 style) ───────────────
   Widget _buildTabletLayout() {
     final tabs = [
-      _HomeContent(songs: _songs, loading: _loading, player: _player,
-        downloads: _downloads, userPlan: _userPlan,
-        onLogout: widget.onLogout, offlineMode: _offlineMode,
-        onToggleOffline: () => setState(() => _offlineMode = !_offlineMode)),
+      _HomeContent(
+          songs: _songs,
+          loading: _loading,
+          player: _player,
+          downloads: _downloads,
+          userPlan: _userPlan,
+          onLogout: widget.onLogout,
+          offlineMode: _offlineMode,
+          onToggleOffline: () => setState(() => _offlineMode = !_offlineMode)),
       SearchScreen(songs: _songs, player: _player),
       LibraryScreen(songs: _songs, player: _player),
     ];
@@ -133,8 +158,8 @@ class _HomeScreenState extends State<HomeScreen> {
         ListenableBuilder(
           listenable: _player,
           builder: (_, __) => _player.current != null
-            ? _TabletPlayerBar(player: _player)
-            : const SizedBox.shrink(),
+              ? _TabletPlayerBar(player: _player)
+              : const SizedBox.shrink(),
         ),
       ]),
     );
@@ -149,20 +174,27 @@ class _BottomNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => BottomNavigationBar(
-    currentIndex: current,
-    onTap: onTap,
-    backgroundColor: const Color(0xFF0A0A0A),
-    selectedItemColor: kTextPrimary,
-    unselectedItemColor: kTextMuted,
-    type: BottomNavigationBarType.fixed,
-    selectedLabelStyle: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
-    unselectedLabelStyle: const TextStyle(fontSize: 10),
-    items: const [
-      BottomNavigationBarItem(icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: 'Home'),
-      BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
-      BottomNavigationBarItem(icon: Icon(Icons.library_music_outlined), activeIcon: Icon(Icons.library_music), label: 'Biblioteca'),
-    ],
-  );
+        currentIndex: current,
+        onTap: onTap,
+        backgroundColor: const Color(0xFF0A0A0A),
+        selectedItemColor: kTextPrimary,
+        unselectedItemColor: kTextMuted,
+        type: BottomNavigationBarType.fixed,
+        selectedLabelStyle:
+            const TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
+        unselectedLabelStyle: const TextStyle(fontSize: 10),
+        items: const [
+          BottomNavigationBarItem(
+              icon: Icon(Icons.home_outlined),
+              activeIcon: Icon(Icons.home),
+              label: 'Home'),
+          BottomNavigationBarItem(icon: Icon(Icons.search), label: 'Search'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.library_music_outlined),
+              activeIcon: Icon(Icons.library_music),
+              label: 'Biblioteca'),
+        ],
+      );
 }
 
 // ── Tablet sidebar ────────────────────────────────────────────────────────────
@@ -170,7 +202,8 @@ class _TabletSidebar extends StatelessWidget {
   final int current;
   final ValueChanged<int> onTap;
   final VoidCallback onLogout;
-  const _TabletSidebar({required this.current, required this.onTap, required this.onLogout});
+  const _TabletSidebar(
+      {required this.current, required this.onTap, required this.onLogout});
 
   @override
   Widget build(BuildContext context) {
@@ -184,25 +217,50 @@ class _TabletSidebar extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
             child: Row(children: [
               Container(
-                width: 32, height: 32,
-                decoration: const BoxDecoration(color: kAccent, shape: BoxShape.circle),
-                child: const Icon(Icons.play_arrow_rounded, color: Colors.black, size: 20),
+                width: 32,
+                height: 32,
+                decoration:
+                    const BoxDecoration(color: kAccent, shape: BoxShape.circle),
+                child: const Icon(Icons.play_arrow_rounded,
+                    color: Colors.black, size: 20),
               ),
               const SizedBox(width: 10),
-              const Text('OursMusic', style: TextStyle(color: kTextPrimary, fontSize: 16, fontWeight: FontWeight.w900)),
+              const Text('OursMusic',
+                  style: TextStyle(
+                      color: kTextPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900)),
             ]),
           ),
 
           // Nav items
-          _SidebarItem(icon: Icons.home, label: 'Home', selected: current == 0, onTap: () => onTap(0)),
-          _SidebarItem(icon: Icons.search, label: 'Search', selected: current == 1, onTap: () => onTap(1)),
-          _SidebarItem(icon: Icons.library_music_outlined, label: 'Your Library', selected: current == 2, onTap: () => onTap(2)),
+          _SidebarItem(
+              icon: Icons.home,
+              label: 'Home',
+              selected: current == 0,
+              onTap: () => onTap(0)),
+          _SidebarItem(
+              icon: Icons.search,
+              label: 'Search',
+              selected: current == 1,
+              onTap: () => onTap(1)),
+          _SidebarItem(
+              icon: Icons.library_music_outlined,
+              label: 'Your Library',
+              selected: current == 2,
+              onTap: () => onTap(2)),
 
-          const Divider(color: Color(0xFF2A2A2A), height: 32, indent: 16, endIndent: 16),
+          const Divider(
+              color: Color(0xFF2A2A2A), height: 32, indent: 16, endIndent: 16),
 
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text('Playlists', style: const TextStyle(color: kTextMuted, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1)),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Text('Playlists',
+                style: TextStyle(
+                    color: kTextMuted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1)),
           ),
           const SizedBox(height: 8),
 
@@ -210,15 +268,20 @@ class _TabletSidebar extends StatelessWidget {
 
           // Logout
           ListTile(
-            leading: const Icon(Icons.person_outline, color: kTextMuted, size: 20),
-            title: const Text('Perfil', style: TextStyle(color: kTextMuted, fontSize: 13)),
-            onTap: () => Navigator.push(context, MaterialPageRoute(
-              builder: (_) => ProfileScreen(onLogout: onLogout))),
+            leading:
+                const Icon(Icons.person_outline, color: kTextMuted, size: 20),
+            title: const Text('Perfil',
+                style: TextStyle(color: kTextMuted, fontSize: 13)),
+            onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => ProfileScreen(onLogout: onLogout))),
             dense: true,
           ),
           ListTile(
             leading: const Icon(Icons.logout, color: kTextMuted, size: 20),
-            title: const Text('Sair', style: TextStyle(color: kTextMuted, fontSize: 13)),
+            title: const Text('Sair',
+                style: TextStyle(color: kTextMuted, fontSize: 13)),
             onTap: onLogout,
             dense: true,
           ),
@@ -234,20 +297,27 @@ class _SidebarItem extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback onTap;
-  const _SidebarItem({required this.icon, required this.label, required this.selected, required this.onTap});
+  const _SidebarItem(
+      {required this.icon,
+      required this.label,
+      required this.selected,
+      required this.onTap});
 
   @override
   Widget build(BuildContext context) => ListTile(
-    leading: Icon(icon, color: selected ? kTextPrimary : kTextMuted, size: 22),
-    title: Text(label, style: TextStyle(
-      color: selected ? kTextPrimary : kTextMuted,
-      fontSize: 14, fontWeight: selected ? FontWeight.w700 : FontWeight.w400)),
-    onTap: onTap,
-    dense: true,
-    selected: selected,
-    selectedTileColor: const Color(0xFF1A1A1A),
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-  );
+        leading:
+            Icon(icon, color: selected ? kTextPrimary : kTextMuted, size: 22),
+        title: Text(label,
+            style: TextStyle(
+                color: selected ? kTextPrimary : kTextMuted,
+                fontSize: 14,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w400)),
+        onTap: onTap,
+        dense: true,
+        selected: selected,
+        selectedTileColor: const Color(0xFF1A1A1A),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+      );
 }
 
 // ── Tablet player bar ─────────────────────────────────────────────────────────
@@ -260,7 +330,8 @@ class _TabletPlayerBar extends StatelessWidget {
     final song = player.current!;
     return GestureDetector(
       // Tap anywhere on the bar (except controls) opens full player
-      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => PlayerScreen(player: player))),
+      onTap: () => Navigator.push(context,
+          MaterialPageRoute(builder: (_) => PlayerScreen(player: player))),
       child: Container(
         height: 72,
         decoration: const BoxDecoration(
@@ -273,28 +344,48 @@ class _TabletPlayerBar extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: song.coverUrl != null
-              ? Image.network(song.coverUrl!, width: 48, height: 48, fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => _placeholder())
-              : _placeholder(),
+                ? Image.network(song.coverUrl!,
+                    width: 48,
+                    height: 48,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _placeholder())
+                : _placeholder(),
           ),
           const SizedBox(width: 12),
-          Expanded(child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(song.title, style: const TextStyle(color: kTextPrimary, fontSize: 13, fontWeight: FontWeight.w600), maxLines: 1, overflow: TextOverflow.ellipsis),
-            Text(song.artist ?? '', style: const TextStyle(color: kTextSecond, fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis),
-          ])),
+          Expanded(
+              child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text(song.title,
+                    style: const TextStyle(
+                        color: kTextPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                Text(song.artist ?? '',
+                    style: const TextStyle(color: kTextSecond, fontSize: 11),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+              ])),
 
           // Controls — stop propagation so they don't open player
           IconButton(
-            icon: const Icon(Icons.skip_previous, color: kTextPrimary, size: 28),
+            icon:
+                const Icon(Icons.skip_previous, color: kTextPrimary, size: 28),
             onPressed: player.skipPrev,
           ),
           GestureDetector(
             onTap: player.togglePlay,
             behavior: HitTestBehavior.opaque,
             child: Container(
-              width: 40, height: 40,
-              decoration: const BoxDecoration(color: kTextPrimary, shape: BoxShape.circle),
-              child: Icon(player.playing ? Icons.pause : Icons.play_arrow, color: Colors.black, size: 24),
+              width: 40,
+              height: 40,
+              decoration: const BoxDecoration(
+                  color: kTextPrimary, shape: BoxShape.circle),
+              child: Icon(player.playing ? Icons.pause : Icons.play_arrow,
+                  color: Colors.black, size: 24),
             ),
           ),
           IconButton(
@@ -303,7 +394,8 @@ class _TabletPlayerBar extends StatelessWidget {
           ),
 
           // Progress bar
-          Expanded(child: Padding(
+          Expanded(
+              child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: SliderTheme(
               data: SliderTheme.of(context).copyWith(
@@ -314,7 +406,9 @@ class _TabletPlayerBar extends StatelessWidget {
                 trackHeight: 3,
                 overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
               ),
-              child: Slider(value: player.progress.clamp(0.0, 1.0), onChanged: player.seek),
+              child: Slider(
+                  value: player.progress.clamp(0.0, 1.0),
+                  onChanged: player.seek),
             ),
           )),
 
@@ -326,8 +420,11 @@ class _TabletPlayerBar extends StatelessWidget {
     );
   }
 
-  Widget _placeholder() => Container(width: 48, height: 48, color: const Color(0xFF2A2A2A),
-    child: const Icon(Icons.music_note, color: kTextMuted));
+  Widget _placeholder() => Container(
+      width: 48,
+      height: 48,
+      color: const Color(0xFF2A2A2A),
+      child: const Icon(Icons.music_note, color: kTextMuted));
 }
 
 // ── Home content ──────────────────────────────────────────────────────────────
@@ -342,27 +439,37 @@ class _HomeContent extends StatelessWidget {
   final VoidCallback onToggleOffline;
 
   const _HomeContent({
-    required this.songs, required this.loading, required this.player,
-    required this.downloads, required this.userPlan,
-    required this.onLogout, required this.offlineMode, required this.onToggleOffline,
+    required this.songs,
+    required this.loading,
+    required this.player,
+    required this.downloads,
+    required this.userPlan,
+    required this.onLogout,
+    required this.offlineMode,
+    required this.onToggleOffline,
   });
-
-  bool get _isPremium => userPlan == 'premium' || userPlan == 'family';
 
   @override
   Widget build(BuildContext context) {
     final isTablet = MediaQuery.of(context).size.shortestSide >= 600;
     final hour = DateTime.now().hour;
-    final greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+    final greeting = hour < 12
+        ? 'Good morning'
+        : hour < 18
+            ? 'Good afternoon'
+            : 'Good evening';
     final recent = songs.take(isTablet ? 8 : 6).toList();
-    final featured = songs.take(isTablet ? 12 : 8).toList();
 
     return CustomScrollView(slivers: [
       SliverAppBar(
         pinned: true,
         backgroundColor: kBgBase,
         automaticallyImplyLeading: false,
-        title: Text(greeting, style: const TextStyle(color: kTextPrimary, fontSize: 22, fontWeight: FontWeight.w900)),
+        title: Text(greeting,
+            style: const TextStyle(
+                color: kTextPrimary,
+                fontSize: 22,
+                fontWeight: FontWeight.w900)),
         actions: [
           // Offline toggle
           GestureDetector(
@@ -371,21 +478,31 @@ class _HomeContent extends StatelessWidget {
               margin: const EdgeInsets.only(right: 8),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
               decoration: BoxDecoration(
-                color: offlineMode ? kAccent.withOpacity(0.15) : const Color(0xFF2A2A2A),
+                color: offlineMode
+                    ? kAccent.withValues(alpha: 0.15)
+                    : const Color(0xFF2A2A2A),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: offlineMode ? kAccent : Colors.transparent),
+                border: Border.all(
+                    color: offlineMode ? kAccent : Colors.transparent),
               ),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Icons.cloud_done, color: offlineMode ? kAccent : kTextMuted, size: 14),
+                Icon(Icons.cloud_done,
+                    color: offlineMode ? kAccent : kTextMuted, size: 14),
                 const SizedBox(width: 4),
-                Text('Offline', style: TextStyle(color: offlineMode ? kAccent : kTextMuted, fontSize: 10, fontWeight: FontWeight.w700)),
+                Text('Offline',
+                    style: TextStyle(
+                        color: offlineMode ? kAccent : kTextMuted,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700)),
               ]),
             ),
           ),
           // Avatar
           GestureDetector(
-            onTap: () => Navigator.push(context, MaterialPageRoute(
-              builder: (_) => ProfileScreen(onLogout: onLogout))),
+            onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => ProfileScreen(onLogout: onLogout))),
             child: Padding(
               padding: const EdgeInsets.only(right: 12),
               child: PremiumAvatar(
@@ -398,25 +515,32 @@ class _HomeContent extends StatelessWidget {
           ),
         ],
       ),
-
       if (loading)
-        const SliverFillRemaining(child: Center(child: CircularProgressIndicator(color: kAccent)))
+        const SliverFillRemaining(
+            child: Center(child: CircularProgressIndicator(color: kAccent)))
       else if (songs.isEmpty)
-        SliverFillRemaining(child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.music_off, size: 64, color: kTextMuted),
-          const SizedBox(height: 16),
-          const Text('No songs yet', style: TextStyle(color: kTextPrimary, fontSize: 18, fontWeight: FontWeight.w700)),
+        const SliverFillRemaining(
+            child: Center(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.music_off, size: 64, color: kTextMuted),
+          SizedBox(height: 16),
+          Text('No songs yet',
+              style: TextStyle(
+                  color: kTextPrimary,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700)),
         ])))
       else ...[
         // Filter chips
-        SliverToBoxAdapter(child: SingleChildScrollView(
+        const SliverToBoxAdapter(
+            child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
           child: Row(children: [
             _Chip(label: 'All', selected: true),
-            const SizedBox(width: 8),
+            SizedBox(width: 8),
             _Chip(label: 'Music'),
-            const SizedBox(width: 8),
+            SizedBox(width: 8),
             _Chip(label: 'Podcasts'),
           ]),
         )),
@@ -443,37 +567,8 @@ class _HomeContent extends StatelessWidget {
           ),
         ),
 
-        // "Your top mixes" section
-        SliverToBoxAdapter(child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 28, 16, 12),
-          child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            const Text('Your top mixes', style: TextStyle(color: kTextPrimary, fontSize: 20, fontWeight: FontWeight.w800)),
-            if (_isPremium)
-              GestureDetector(
-                onTap: () => downloads.downloadAll(featured, userPlan),
-                child: Row(children: [
-                  const Icon(Icons.download, color: kAccent, size: 16),
-                  const SizedBox(width: 4),
-                  const Text('Download all', style: TextStyle(color: kAccent, fontSize: 12, fontWeight: FontWeight.w700)),
-                ]),
-              ),
-          ]),
-        )),
-        SliverToBoxAdapter(child: SizedBox(
-          height: isTablet ? 230 : 200,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: featured.length,
-            itemBuilder: (ctx, i) => _AlbumCard(
-              song: featured[i],
-              onTap: () => player.play(featured[i], songs),
-              downloads: downloads,
-              userPlan: userPlan,
-              size: isTablet ? 180.0 : 150.0,
-            ),
-          ),
-        )),
+        // Carrosséis por álbum — estilo Netflix
+        ..._buildAlbumCarousels(songs, player, downloads, userPlan, isTablet),
 
         const SliverPadding(padding: EdgeInsets.only(bottom: 160)),
       ],
@@ -488,15 +583,17 @@ class _Chip extends StatelessWidget {
   const _Chip({required this.label, this.selected = false});
   @override
   Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-    decoration: BoxDecoration(
-      color: selected ? kAccent : const Color(0xFF2A2A2A),
-      borderRadius: BorderRadius.circular(20),
-    ),
-    child: Text(label, style: TextStyle(
-      color: selected ? Colors.black : kTextPrimary,
-      fontSize: 13, fontWeight: FontWeight.w600)),
-  );
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? kAccent : const Color(0xFF2A2A2A),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                color: selected ? Colors.black : kTextPrimary,
+                fontSize: 13,
+                fontWeight: FontWeight.w600)),
+      );
 }
 
 // ── Quick tile — compact, fixed height ────────────────────────────────────────
@@ -505,7 +602,11 @@ class _QuickTile extends StatelessWidget {
   final VoidCallback onTap;
   final DownloadService downloads;
   final String userPlan;
-  const _QuickTile({required this.song, required this.onTap, required this.downloads, required this.userPlan});
+  const _QuickTile(
+      {required this.song,
+      required this.onTap,
+      required this.downloads,
+      required this.userPlan});
 
   @override
   Widget build(BuildContext context) {
@@ -513,38 +614,56 @@ class _QuickTile extends StatelessWidget {
       onTap: onTap,
       child: Container(
         height: 52,
-        decoration: BoxDecoration(color: const Color(0xFF2A2A2A), borderRadius: BorderRadius.circular(4)),
+        decoration: BoxDecoration(
+            color: const Color(0xFF2A2A2A),
+            borderRadius: BorderRadius.circular(4)),
         child: Row(children: [
           ClipRRect(
-            borderRadius: const BorderRadius.horizontal(left: Radius.circular(4)),
+            borderRadius:
+                const BorderRadius.horizontal(left: Radius.circular(4)),
             child: song.coverUrl != null
-              ? Image.network(song.coverUrl!, width: 52, height: 52, fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => _placeholder())
-              : _placeholder(),
+                ? Image.network(song.coverUrl!,
+                    width: 52,
+                    height: 52,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _placeholder())
+                : _placeholder(),
           ),
           const SizedBox(width: 10),
-          Expanded(child: Text(song.title,
-            style: const TextStyle(color: kTextPrimary, fontSize: 12, fontWeight: FontWeight.w700),
-            maxLines: 1, overflow: TextOverflow.ellipsis)),
+          Expanded(
+              child: Text(song.title,
+                  style: const TextStyle(
+                      color: kTextPrimary,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis)),
           // Download button
           ListenableBuilder(
             listenable: downloads,
             builder: (_, __) {
               final status = downloads.getStatus(song.id);
               if (status == DownloadStatus.ready) {
-                return const Padding(padding: EdgeInsets.only(right: 8),
-                  child: Icon(Icons.cloud_done, color: kAccent, size: 16));
+                return const Padding(
+                    padding: EdgeInsets.only(right: 8),
+                    child: Icon(Icons.cloud_done, color: kAccent, size: 16));
               }
               if (status == DownloadStatus.downloading) {
-                return const Padding(padding: EdgeInsets.only(right: 8),
-                  child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: kAccent, strokeWidth: 2)));
+                return const Padding(
+                    padding: EdgeInsets.only(right: 8),
+                    child: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                            color: kAccent, strokeWidth: 2)));
               }
               if (userPlan != 'free') {
                 return IconButton(
                   icon: const Icon(Icons.download, color: kTextMuted, size: 16),
                   onPressed: () => downloads.downloadSong(song.id, userPlan),
                   padding: const EdgeInsets.only(right: 4),
-                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  constraints:
+                      const BoxConstraints(minWidth: 32, minHeight: 32),
                 );
               }
               return const SizedBox(width: 8);
@@ -555,8 +674,11 @@ class _QuickTile extends StatelessWidget {
     );
   }
 
-  Widget _placeholder() => Container(width: 52, height: 52, color: kAccent,
-    child: const Icon(Icons.music_note, color: Colors.black, size: 24));
+  Widget _placeholder() => Container(
+      width: 52,
+      height: 52,
+      color: kAccent,
+      child: const Icon(Icons.music_note, color: Colors.black, size: 24));
 }
 
 // ── Album card ────────────────────────────────────────────────────────────────
@@ -566,7 +688,12 @@ class _AlbumCard extends StatelessWidget {
   final DownloadService downloads;
   final String userPlan;
   final double size;
-  const _AlbumCard({required this.song, required this.onTap, required this.downloads, required this.userPlan, required this.size});
+  const _AlbumCard(
+      {required this.song,
+      required this.onTap,
+      required this.downloads,
+      required this.userPlan,
+      required this.size});
 
   @override
   Widget build(BuildContext context) {
@@ -580,13 +707,18 @@ class _AlbumCard extends StatelessWidget {
             ClipRRect(
               borderRadius: BorderRadius.circular(6),
               child: song.coverUrl != null
-                ? Image.network(song.coverUrl!, width: size, height: size, fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => _placeholder())
-                : _placeholder(),
+                  ? Image.network(song.coverUrl!,
+                      width: size,
+                      height: size,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => _placeholder())
+                  : _placeholder(),
             ),
             // Download button overlay
             if (userPlan != 'free')
-              Positioned(bottom: 8, right: 8,
+              Positioned(
+                bottom: 8,
+                right: 8,
                 child: ListenableBuilder(
                   listenable: downloads,
                   builder: (_, __) {
@@ -594,24 +726,34 @@ class _AlbumCard extends StatelessWidget {
                     if (status == DownloadStatus.ready) {
                       return Container(
                         padding: const EdgeInsets.all(4),
-                        decoration: const BoxDecoration(color: kAccent, shape: BoxShape.circle),
-                        child: const Icon(Icons.cloud_done, color: Colors.black, size: 14),
+                        decoration: const BoxDecoration(
+                            color: kAccent, shape: BoxShape.circle),
+                        child: const Icon(Icons.cloud_done,
+                            color: Colors.black, size: 14),
                       );
                     }
                     if (status == DownloadStatus.downloading) {
                       return Container(
-                        width: 28, height: 28,
-                        decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), shape: BoxShape.circle),
-                        child: const Padding(padding: EdgeInsets.all(6),
-                          child: CircularProgressIndicator(color: kAccent, strokeWidth: 2)),
+                        width: 28,
+                        height: 28,
+                        decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.7),
+                            shape: BoxShape.circle),
+                        child: const Padding(
+                            padding: EdgeInsets.all(6),
+                            child: CircularProgressIndicator(
+                                color: kAccent, strokeWidth: 2)),
                       );
                     }
                     return GestureDetector(
                       onTap: () => downloads.downloadSong(song.id, userPlan),
                       child: Container(
                         padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), shape: BoxShape.circle),
-                        child: const Icon(Icons.download, color: kTextPrimary, size: 16),
+                        decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.7),
+                            shape: BoxShape.circle),
+                        child: const Icon(Icons.download,
+                            color: kTextPrimary, size: 16),
                       ),
                     );
                   },
@@ -619,15 +761,136 @@ class _AlbumCard extends StatelessWidget {
               ),
           ]),
           const SizedBox(height: 6),
-          Text(song.title, style: const TextStyle(color: kTextPrimary, fontSize: 13, fontWeight: FontWeight.w600),
-            maxLines: 1, overflow: TextOverflow.ellipsis),
-          Text(song.artist ?? 'Unknown', style: const TextStyle(color: kTextSecond, fontSize: 11),
-            maxLines: 1, overflow: TextOverflow.ellipsis),
+          Text(song.title,
+              style: const TextStyle(
+                  color: kTextPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis),
+          Text(song.artist ?? 'Unknown',
+              style: const TextStyle(color: kTextSecond, fontSize: 11),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis),
         ]),
       ),
     );
   }
 
-  Widget _placeholder() => Container(width: size, height: size, color: kAccent,
-    child: Icon(Icons.music_note, color: Colors.black, size: size * 0.4));
+  Widget _placeholder() => Container(
+      width: size,
+      height: size,
+      color: kAccent,
+      child: Icon(Icons.music_note, color: Colors.black, size: size * 0.4));
+}
+
+// ── Album carousel builder ────────────────────────────────────────────────────
+List<Widget> _buildAlbumCarousels(
+  List<Song> songs,
+  PlayerController player,
+  DownloadService downloads,
+  String userPlan,
+  bool isTablet,
+) {
+  const maxPerRow = 20;
+  final used = <String>{};
+  final carousels = <MapEntry<String, List<Song>>>[];
+
+  // 1. Recentes
+  final recentes = songs.where((s) => s.available).take(maxPerRow).toList();
+  if (recentes.isNotEmpty) {
+    carousels.add(MapEntry('Adicionadas Recentemente', recentes));
+    for (final s in recentes) {
+      used.add(s.id);
+    }
+  }
+
+  // 2. Por álbum
+  final albumMap = <String, List<Song>>{};
+  for (final s in songs) {
+    final key = s.albumName?.trim();
+    if (key == null || key.isEmpty) continue;
+    albumMap.putIfAbsent(key, () => []).add(s);
+  }
+  final sortedAlbums = albumMap.entries.toList()
+    ..sort((a, b) => b.value.length.compareTo(a.value.length));
+  for (final entry in sortedAlbums) {
+    if (carousels.length >= 10) break;
+    final fresh =
+        entry.value.where((s) => !used.contains(s.id)).take(maxPerRow).toList();
+    if (fresh.length < 2) continue;
+    for (final s in fresh) {
+      used.add(s.id);
+    }
+    carousels.add(MapEntry(entry.key, fresh));
+  }
+
+  // 3. Por artista (sobras)
+  final artistMap = <String, List<Song>>{};
+  for (final s in songs) {
+    if (used.contains(s.id)) continue;
+    final key = s.artist?.trim();
+    if (key == null || key.isEmpty) continue;
+    artistMap.putIfAbsent(key, () => []).add(s);
+  }
+  final sortedArtists = artistMap.entries.toList()
+    ..sort((a, b) => b.value.length.compareTo(a.value.length));
+  for (final entry in sortedArtists) {
+    if (carousels.length >= 14) break;
+    final fresh =
+        entry.value.where((s) => !used.contains(s.id)).take(maxPerRow).toList();
+    if (fresh.length < 2) continue;
+    for (final s in fresh) {
+      used.add(s.id);
+    }
+    carousels.add(MapEntry(entry.key, fresh));
+  }
+
+  // 4. Resto
+  final rest =
+      songs.where((s) => !used.contains(s.id)).take(maxPerRow).toList();
+  if (rest.length >= 2) carousels.add(MapEntry('Mais Músicas', rest));
+
+  final cardSize = isTablet ? 180.0 : 150.0;
+
+  return carousels
+      .map((entry) => SliverToBoxAdapter(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 24, 16, 10),
+                child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                          child: Text(entry.key,
+                              style: const TextStyle(
+                                  color: kTextPrimary,
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w800),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis)),
+                      Text('${entry.value.length} músicas',
+                          style:
+                              const TextStyle(color: kTextMuted, fontSize: 12)),
+                    ]),
+              ),
+              SizedBox(
+                height: cardSize + 48,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: entry.value.length,
+                  itemBuilder: (ctx, i) => _AlbumCard(
+                    song: entry.value[i],
+                    onTap: () => player.play(entry.value[i], entry.value),
+                    downloads: downloads,
+                    userPlan: userPlan,
+                    size: cardSize,
+                  ),
+                ),
+              ),
+            ]),
+          ))
+      .toList();
 }

@@ -505,6 +505,52 @@ export class AdminService {
   }
 
   /**
+   * POST /admin/import/s3/enrich
+   * Para cada música do S3 sem artista ou sem capa:
+   * 1. Tenta extrair artista do storagePath ("Artista/Álbum/Título" ou "Artista - Título")
+   * 2. Busca no Deezer/MusicBrainz pelo título + artista
+   * 3. Atualiza artista, álbum, capa, duração, spotifyId, deezerId
+   */
+  async enrichS3Metadata(onlyMissing = true): Promise<{ enriched: number; notFound: number; total: number }> {
+    const songs = await this.prisma.song.findMany({
+      where: {
+        storageType: 's3',
+        ...(onlyMissing ? { OR: [{ artist: null }, { coverUrl: null }] } : {}),
+      },
+      select: { id: true, title: true, artist: true, storagePath: true },
+    });
+
+    let enriched = 0, notFound = 0;
+
+    for (const song of songs) {
+      const meta = await this.spotifyService.deepEnrichTrack(
+        song.title,
+        song.artist ?? null,
+        song.storagePath ?? null,
+      );
+
+      if (!meta) { notFound++; continue; }
+
+      await this.prisma.song.update({
+        where: { id: song.id },
+        data: {
+          artist: meta.artist || song.artist,
+          albumName: meta.album || null,
+          coverUrl: meta.coverUrl || null,
+          previewUrl: meta.previewUrl || null,
+          spotifyId: meta.spotifyId || null,
+          deezerId: meta.deezerId || null,
+          popularity: meta.popularity || 0,
+          ...(meta.durationMs > 0 ? { duration: Math.round(meta.durationMs / 1000) } : {}),
+        },
+      });
+      enriched++;
+    }
+
+    return { enriched, notFound, total: songs.length };
+  }
+
+  /**
    * Enriches all songs in the DB with Spotify metadata:
    * cover art, artist name, album name, popularity, Spotify ID.
    * Searches by title + existing artist. Skips songs already enriched.
@@ -635,6 +681,25 @@ export class AdminService {
       }
     }
     return { updated, errors };
+  }
+
+  async enrichGenres(onlyMissing = true): Promise<{ enriched: number; notFound: number; total: number }> {
+    const songs = await this.prisma.song.findMany({
+      where: onlyMissing ? { genre: null } : undefined,
+      select: { id: true, title: true, artist: true, deezerId: true },
+    });
+
+    let enriched = 0, notFound = 0;
+    for (const song of songs) {
+      const genre = await this.spotifyService.fetchGenre(song.title, song.artist ?? null, song.deezerId ?? null);
+      if (genre) {
+        await this.prisma.song.update({ where: { id: song.id }, data: { genre } });
+        enriched++;
+      } else {
+        notFound++;
+      }
+    }
+    return { enriched, notFound, total: songs.length };
   }
 
   async enrichWithLyrics(onlyMissing = true): Promise<{ enriched: number; notFound: number }> {

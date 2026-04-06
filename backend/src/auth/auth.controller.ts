@@ -1,10 +1,13 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Throttle } from '@nestjs/throttler';
-import { Response } from 'express';
+import { Response, Request } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto, LoginDto, RefreshDto } from './dto';
 import { Public } from './decorators';
+import { PrismaService } from '../prisma/prisma.service';
+
+type AuthReq = Request & { user: { userId: string } };
 
 const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: 'strict' as const };
 const ACCESS_TOKEN_MAX_AGE = 15 * 60 * 1000;          // 15 minutes
@@ -12,7 +15,20 @@ const REFRESH_TOKEN_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly prisma: PrismaService,
+  ) {}
+
+  /** GET /auth/me — retorna o usuário atual com isAdmin */
+  @Get('me')
+  async me(@Req() req: AuthReq) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: req.user.userId },
+      select: { id: true, email: true, name: true, plan: true, isAdmin: true, avatarUrl: true, username: true },
+    });
+    return user;
+  }
 
   @Public()
   @Throttle({ default: { limit: 10, ttl: 60000 } })

@@ -24,21 +24,24 @@ class _SplashScreenState extends State<SplashScreen>
     super.initState();
 
     // Logo pulse
-    _logoCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 800));
-    _logoScale = Tween<double>(begin: 0.4, end: 1.0).animate(
-      CurvedAnimation(parent: _logoCtrl, curve: Curves.elasticOut));
+    _logoCtrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 800));
+    _logoScale = Tween<double>(begin: 0.4, end: 1.0)
+        .animate(CurvedAnimation(parent: _logoCtrl, curve: Curves.elasticOut));
     _logoOpacity = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _logoCtrl, curve: const Interval(0.0, 0.5)));
+        CurvedAnimation(parent: _logoCtrl, curve: const Interval(0.0, 0.5)));
 
     // Sound wave
-    _waveCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))
+    _waveCtrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1200))
       ..repeat();
 
     // Text slide up
-    _textCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+    _textCtrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 600));
     _textOpacity = Tween<double>(begin: 0.0, end: 1.0).animate(_textCtrl);
-    _textSlide = Tween<double>(begin: 20.0, end: 0.0).animate(
-      CurvedAnimation(parent: _textCtrl, curve: Curves.easeOut));
+    _textSlide = Tween<double>(begin: 20.0, end: 0.0)
+        .animate(CurvedAnimation(parent: _textCtrl, curve: Curves.easeOut));
 
     _start();
   }
@@ -77,15 +80,20 @@ class _SplashScreenState extends State<SplashScreen>
               child: Transform.scale(
                 scale: _logoScale.value,
                 child: Container(
-                  width: 100, height: 100,
+                  width: 100,
+                  height: 100,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: kAccent,
                     boxShadow: [
-                      BoxShadow(color: kAccent.withOpacity(0.4), blurRadius: 30, spreadRadius: 5),
+                      BoxShadow(
+                          color: kAccent.withValues(alpha: 0.4),
+                          blurRadius: 30,
+                          spreadRadius: 5),
                     ],
                   ),
-                  child: const Icon(Icons.play_arrow_rounded, color: Colors.black, size: 60),
+                  child: const Icon(Icons.play_arrow_rounded,
+                      color: Colors.black, size: 60),
                 ),
               ),
             ),
@@ -103,10 +111,11 @@ class _SplashScreenState extends State<SplashScreen>
                 final phase = _waveCtrl.value * 2 * pi + i * 0.6;
                 final h = 8.0 + 20.0 * (0.5 + 0.5 * sin(phase));
                 return Container(
-                  width: 4, height: h,
+                  width: 4,
+                  height: h,
                   margin: const EdgeInsets.symmetric(horizontal: 2),
                   decoration: BoxDecoration(
-                    color: kAccent.withOpacity(0.7 + 0.3 * sin(phase)),
+                    color: kAccent.withValues(alpha: 0.7 + 0.3 * sin(phase)),
                     borderRadius: BorderRadius.circular(2),
                   ),
                 );
@@ -123,8 +132,8 @@ class _SplashScreenState extends State<SplashScreen>
               opacity: _textOpacity.value,
               child: Transform.translate(
                 offset: Offset(0, _textSlide.value),
-                child: Column(children: [
-                  const Text(
+                child: const Column(children: [
+                  Text(
                     'OursMusic',
                     style: TextStyle(
                       color: Colors.white,
@@ -133,7 +142,7 @@ class _SplashScreenState extends State<SplashScreen>
                       letterSpacing: -0.5,
                     ),
                   ),
-                  const SizedBox(height: 4),
+                  SizedBox(height: 4),
                   Text(
                     'Sua música, do seu jeito',
                     style: TextStyle(color: kTextSecond, fontSize: 14),

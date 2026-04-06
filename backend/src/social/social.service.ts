@@ -12,13 +12,15 @@ export class SocialService {
 
   async searchUsers(query: string, currentUserId: string) {
     if (!query.trim()) return [];
+
+    // Só busca por username se começar com @
+    if (!query.startsWith('@')) return [];
+    const usernameQuery = query.slice(1); // remove o @
+    if (!usernameQuery.trim()) return [];
+
     const users = await this.prisma.user.findMany({
       where: {
-        OR: [
-          { name: { contains: query, mode: 'insensitive' } },
-          { username: { contains: query, mode: 'insensitive' } },
-          { email: { contains: query, mode: 'insensitive' } },
-        ],
+        username: { contains: usernameQuery, mode: 'insensitive' },
         NOT: { id: currentUserId },
       },
       select: {
@@ -29,7 +31,6 @@ export class SocialService {
       take: 20,
     });
 
-    // Check if current user follows each result
     const followingIds = await this.prisma.follow.findMany({
       where: { followerId: currentUserId, followingId: { in: users.map(u => u.id) } },
       select: { followingId: true },
@@ -111,6 +112,16 @@ export class SocialService {
     name?: string; username?: string; bio?: string;
     avatarUrl?: string; coverUrl?: string; isPrivate?: boolean;
   }) {
+    // Sanitiza username — remove @, espaços e caracteres inválidos
+    if (data.username !== undefined) {
+      data.username = data.username
+        .replace(/@/g, '')
+        .replace(/[^a-zA-Z0-9_.]/g, '')
+        .slice(0, 30)
+        .toLowerCase();
+      if (data.username === '') data.username = undefined as any;
+    }
+
     if (data.username) {
       const existing = await this.prisma.user.findFirst({
         where: { username: data.username, NOT: { id: userId } },

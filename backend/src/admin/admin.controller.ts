@@ -141,6 +141,11 @@ export class AdminController {
     return this.adminService.importFromS3(prefix);
   }
 
+  @Post('import/s3/enrich')
+  enrichS3Metadata(@Query('all') all?: string) {
+    return this.adminService.enrichS3Metadata(all !== 'true');
+  }
+
   // ── Activity logs ────────────────────────────────────────
   @Get('activity')
   activityLogs(@Query('limit') limit = '50') {
@@ -161,6 +166,11 @@ export class AdminController {
   @Post('spotify/enrich-lyrics')
   enrichLyrics(@Query('all') all?: string) {
     return this.adminService.enrichWithLyrics(all !== 'true');
+  }
+
+  @Post('spotify/enrich-genres')
+  enrichGenres(@Query('all') all?: string) {
+    return this.adminService.enrichGenres(all !== 'true');
   }
 
   @Post('spotify/catalog')
@@ -201,6 +211,48 @@ export class AdminController {
       return await this.magicImportService.magicImport(req.user.userId, artist.trim(), album.trim(), Number(maxTracks), jobId);
     } catch (err: any) {
       throw new BadRequestException(err?.message ?? 'Magic import failed');
+    }
+  }
+
+  @Post('magic-import/pending')
+  async magicImportPending(
+    @Req() req: AuthReq,
+    @Body('jobId') jobId = `job-${Date.now()}`,
+  ) {
+    try {
+      return await this.magicImportService.magicImportPending(req.user.userId, jobId);
+    } catch (err: any) {
+      throw new BadRequestException(err?.message ?? 'Pending import failed');
+    }
+  }
+
+  /**
+   * POST /admin/magic-import/url
+   * Body: { url: string, maxTracks?: number, jobId?: string }
+   *
+   * Aceita links do Spotify (faixa, álbum, playlist, artista) e Deezer.
+   * - Álbum → Magic Import completo (baixa áudio via yt-dlp)
+   * - Faixa/Playlist/Artista → Importa como catálogo (metadados, sem áudio)
+   *
+   * Progresso via SSE: GET /events/magic-import/:jobId
+   */
+  @Post('magic-import/url')
+  async magicImportByUrl(
+    @Req() req: AuthReq,
+    @Body('url') url: string,
+    @Body('maxTracks') maxTracks = 20,
+    @Body('jobId') jobId = `job-${Date.now()}`,
+  ) {
+    if (!url?.trim()) throw new BadRequestException('url é obrigatória');
+    try {
+      return await this.magicImportService.magicImportByUrl(
+        req.user.userId,
+        url.trim(),
+        Number(maxTracks),
+        jobId,
+      );
+    } catch (err: any) {
+      throw new BadRequestException(err?.message ?? 'Import by URL failed');
     }
   }
 

@@ -27,7 +27,8 @@ class PlayerController extends ChangeNotifier {
   LoopMode get repeat => _repeat;
   double get progress {
     if (_duration.inMilliseconds <= 0) return 0.0;
-    return (_position.inMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
+    return (_position.inMilliseconds / _duration.inMilliseconds)
+        .clamp(0.0, 1.0);
   }
 
   AudioPlayer? _getAudio() {
@@ -39,8 +40,14 @@ class PlayerController extends ChangeNotifier {
         if (s.processingState == ProcessingState.completed) _next();
         notifyListeners();
       });
-      _audio!.positionStream.listen((p) { _position = p; notifyListeners(); });
-      _audio!.durationStream.listen((d) { _duration = d ?? Duration.zero; notifyListeners(); });
+      _audio!.positionStream.listen((p) {
+        _position = p;
+        notifyListeners();
+      });
+      _audio!.durationStream.listen((d) {
+        _duration = d ?? Duration.zero;
+        notifyListeners();
+      });
     } catch (e) {
       debugPrint('AudioPlayer init error: $e');
       _audio = null;
@@ -86,12 +93,19 @@ class PlayerController extends ChangeNotifier {
   Future<void> _next() async {
     if (_queue.isEmpty) return;
     if (_repeat == LoopMode.one) {
-      try { await _getAudio()?.seek(Duration.zero); await _getAudio()?.play(); } catch (_) {}
+      try {
+        await _getAudio()?.seek(Duration.zero);
+        await _getAudio()?.play();
+      } catch (_) {}
       return;
     }
     int next = _idx + 1;
     if (next >= _queue.length) {
-      if (_repeat == LoopMode.all) next = 0; else return;
+      if (_repeat == LoopMode.all) {
+        next = 0;
+      } else {
+        return;
+      }
     }
     _idx = next;
     await _loadAndPlay(_queue[_idx]);
@@ -101,9 +115,17 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> skipPrev() async {
     try {
-      if (_position.inSeconds > 3) { await _getAudio()?.seek(Duration.zero); return; }
-      if (_idx > 0) { _idx--; await _loadAndPlay(_queue[_idx]); }
-    } catch (e) { debugPrint('skipPrev error: $e'); }
+      if (_position.inSeconds > 3) {
+        await _getAudio()?.seek(Duration.zero);
+        return;
+      }
+      if (_idx > 0) {
+        _idx--;
+        await _loadAndPlay(_queue[_idx]);
+      }
+    } catch (e) {
+      debugPrint('skipPrev error: $e');
+    }
   }
 
   Future<void> seek(double pct) async {
@@ -115,21 +137,34 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> setVolume(double v) async {
     _volume = v.clamp(0.0, 1.0);
-    try { await _getAudio()?.setVolume(_volume); } catch (_) {}
+    try {
+      await _getAudio()?.setVolume(_volume);
+    } catch (_) {}
     notifyListeners();
   }
 
-  void toggleShuffle() { _shuffle = !_shuffle; notifyListeners(); }
+  void toggleShuffle() {
+    _shuffle = !_shuffle;
+    notifyListeners();
+  }
 
   void cycleRepeat() {
-    _repeat = _repeat == LoopMode.off ? LoopMode.one : _repeat == LoopMode.one ? LoopMode.all : LoopMode.off;
-    try { _audio?.setLoopMode(_repeat); } catch (_) {}
+    _repeat = _repeat == LoopMode.off
+        ? LoopMode.one
+        : _repeat == LoopMode.one
+            ? LoopMode.all
+            : LoopMode.off;
+    try {
+      _audio?.setLoopMode(_repeat);
+    } catch (_) {}
     notifyListeners();
   }
 
   @override
   void dispose() {
-    try { _audio?.dispose(); } catch (_) {}
+    try {
+      _audio?.dispose();
+    } catch (_) {}
     super.dispose();
   }
 }

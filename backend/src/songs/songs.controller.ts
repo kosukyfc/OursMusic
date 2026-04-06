@@ -34,8 +34,9 @@ export class SongsController {
   ) {}
 
   @Get()
-  list() {
-    return this.songsService.list();
+  list(@Req() req: Request & { query: { uploadedBy?: string } }) {
+    const uploadedBy = (req as any).query?.uploadedBy as string | undefined;
+    return this.songsService.list(uploadedBy);
   }
 
   @Get(':id/lyrics')

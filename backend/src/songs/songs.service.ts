@@ -21,10 +21,10 @@ export class SongsService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  async list() {
+  async list(uploadedBy?: string) {
     return this.prisma.song.findMany({
+      where: uploadedBy ? { uploadedBy } : undefined,
       orderBy: { createdAt: 'desc' },
-      take: 100,
     });
   }
 

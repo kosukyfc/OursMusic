@@ -1,27 +1,54 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { PremiumAvatar } from './components/PremiumAvatar';
 import { AvatarEditModal } from './components/AvatarEditModal';
 import { DownloadButton } from './components/DownloadButton';
 import { useDownloads } from './hooks/useDownloads';
+import { usePlaylists } from './hooks/usePlaylists';
+import { useFavorites } from './hooks/useFavorites';
 import { THEMES, applyTheme, loadSavedTheme, type AppTheme } from './theme/themes';
-import { LANGUAGES, TRANSLATIONS, loadSavedLang, saveLang, t, type Lang } from './theme/i18n';
+import { LANGUAGES, TRANSLATIONS, loadSavedLang, saveLang, type Lang } from './theme/i18n';
 import { ConnectButton } from './devices/ConnectButton';
 import { useDevices } from './devices/useDevices';
+import { LyricsPanel } from './player/LyricsPanel';
 import './index.css';
 import { AdminPanel } from './admin/AdminPanel';
 import './admin/admin.css';
 import { AuthCallback } from './AuthCallback';
+import { CoverEditModal } from './components/CoverEditModal';
 
-const API = 'http://localhost:3000';
+import { API_URL } from './config';
 
-interface Song { id: string; title: string; artist?: string; albumName?: string; duration: number; coverUrl?: string; available?: boolean; }
+const API = API_URL;
+
+interface Song { id: string; title: string; artist?: string; albumName?: string; genre?: string; duration: number; coverUrl?: string; available?: boolean; }
 interface User { id: string; email: string; name?: string; isAdmin?: boolean; }
 type RepeatMode = 'off' | 'one' | 'all';
 
-async function apiFetch(path: string, token: string, opts: RequestInit = {}) {
+let _refreshToken = localStorage.getItem('refresh_token') ?? '';
+
+async function apiFetch(path: string, token: string, opts: RequestInit = {}): Promise<any> {
   const res = await fetch(`${API}${path}`, { ...opts, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(opts.headers ?? {}) } });
+  if (res.status === 401 && _refreshToken) {
+    // Try refresh
+    try {
+      const r = await fetch(`${API}/auth/refresh`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: _refreshToken }) });
+      if (r.ok) {
+        const d = await r.json();
+        const newToken = d.access_token;
+        if (newToken) {
+          localStorage.setItem('token', newToken);
+          if (d.refresh_token) { _refreshToken = d.refresh_token; localStorage.setItem('refresh_token', d.refresh_token); }
+          // Retry original request with new token
+          const retry = await fetch(`${API}${path}`, { ...opts, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${newToken}`, ...(opts.headers ?? {}) } });
+          if (!retry.ok) throw new Error((await retry.json().catch(() => ({}))).message ?? retry.statusText);
+          return retry.json();
+        }
+      }
+    } catch (_) {}
+  }
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? res.statusText);
-  return res.json();
+  if (res.status === 204) return null;
+  return res.json().catch(() => null);
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -113,6 +140,7 @@ function AuthModal({ onAuth }: { onAuth: (token: string, user: User) => void }) 
       const data = await fetch(`${API}/auth/${mode}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
         .then(async r => { const d = await r.json(); if (!r.ok) throw new Error(d.message); return d; });
       onAuth(data.access_token, data.user);
+      if (data.refresh_token) { _refreshToken = data.refresh_token; localStorage.setItem('refresh_token', data.refresh_token); }
     } catch (err: any) { setError(err.message ?? 'Erro ao autenticar'); }
     finally { setLoading(false); }
   }
@@ -129,7 +157,7 @@ function AuthModal({ onAuth }: { onAuth: (token: string, user: User) => void }) 
           <button className="btn btn--primary" type="submit" disabled={loading}>{loading ? 'Aguarde...' : mode === 'login' ? 'Entrar' : 'Criar conta'}</button>
         </form>
         <div className="modal__divider">ou</div>
-        <a className="btn btn--outline" href="http://localhost:3000/auth/google" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, textDecoration: 'none' }}>
+        <a className="btn btn--outline" href={`${API}/auth/google`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, textDecoration: 'none' }}>
           <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
           Entrar com Google
         </a>
@@ -148,6 +176,8 @@ function ProfilePage({ user, songs, token, onClose, onPlaySong }: {
   const [followers, setFollowers] = useState<any[]>([]);
   const [following, setFollowing] = useState<any[]>([]);
   const [editing, setEditing] = useState(false);
+  const [showCoverEdit, setShowCoverEdit] = useState(false);
+  const [showAvatarEditModal, setShowAvatarEditModal] = useState(false);
   const [editForm, setEditForm] = useState({ name: '', username: '', bio: '', avatarUrl: '', coverUrl: '', isPrivate: false });
   const [saving, setSaving] = useState(false);
   const [searchQ, setSearchQ] = useState('');
@@ -180,8 +210,12 @@ function ProfilePage({ user, songs, token, onClose, onPlaySong }: {
   async function doSearch(q: string) {
     setSearchQ(q);
     if (!q.trim()) { setSearchResults([]); return; }
+    // Só busca usuários se começar com @
+    if (!q.startsWith('@')) { setSearchResults([]); return; }
+    const username = q.slice(1); // remove o @
+    if (!username.trim()) { setSearchResults([]); return; }
     try {
-      const data = await apiFetch(`/social/search?q=${encodeURIComponent(q)}`, token);
+      const data = await apiFetch(`/social/search?q=${encodeURIComponent(username)}`, token);
       setSearchResults(data);
     } catch { setSearchResults([]); }
   }
@@ -202,10 +236,46 @@ function ProfilePage({ user, songs, token, onClose, onPlaySong }: {
           <button className="sp-profile-page__back" onClick={onClose}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
           </button>
-          {editing && (
-            <button className="sp-profile-page__edit-cover" onClick={() => { const url = prompt('URL da capa:'); if (url) setEditForm(f => ({ ...f, coverUrl: url })); }}>
-              📷 Mudar capa
+
+          {/* Botão de ajuste da capa — visível sempre */}
+          {(profile?.coverUrl || editing) && (
+            <button
+              onClick={() => setShowCoverEdit(true)}
+              style={{
+                position: 'absolute', top: 12, right: 12,
+                width: 36, height: 36,
+                background: 'rgba(0,0,0,0.6)',
+                border: '1.5px solid rgba(255,255,255,0.25)',
+                borderRadius: '50%',
+                color: '#fff', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                backdropFilter: 'blur(6px)',
+                transition: 'background 0.15s, transform 0.15s',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(0,0,0,0.85)'; (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1.1)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(0,0,0,0.6)'; (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1)'; }}
+              title="Ajustar capa"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+              </svg>
             </button>
+          )}
+          {showCoverEdit && (
+            <CoverEditModal
+              token={token}
+              currentUrl={profile?.coverUrl}
+              onSaved={url => { setEditForm(f => ({ ...f, coverUrl: url })); setProfile((p: any) => ({ ...p, coverUrl: url })); setShowCoverEdit(false); }}
+              onClose={() => setShowCoverEdit(false)}
+            />
+          )}
+          {showAvatarEditModal && (
+            <AvatarEditModal
+              token={token}
+              currentUrl={profile?.avatarUrl}
+              onSaved={url => { setEditForm(f => ({ ...f, avatarUrl: url })); setProfile((p: any) => ({ ...p, avatarUrl: url })); setShowAvatarEditModal(false); }}
+              onClose={() => setShowAvatarEditModal(false)}
+            />
           )}
         </div>
 
@@ -215,7 +285,11 @@ function ProfilePage({ user, songs, token, onClose, onPlaySong }: {
               {!(editing ? editForm.avatarUrl : profile?.avatarUrl) && user.email[0].toUpperCase()}
             </div>
             {editing && (
-              <button className="sp-profile-page__edit-avatar" onClick={() => { const url = prompt('URL do avatar:'); if (url) setEditForm(f => ({ ...f, avatarUrl: url })); }}>📷</button>
+              <button className="sp-profile-page__edit-avatar" onClick={() => setShowAvatarEditModal(true)}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+                </svg>
+              </button>
             )}
           </div>
           <div className="sp-profile-page__actions">
@@ -228,7 +302,11 @@ function ProfilePage({ user, songs, token, onClose, onPlaySong }: {
         {editing ? (
           <div className="sp-profile-page__edit-form">
             <div className="sp-profile-edit-row"><label>Nome</label><input value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} placeholder="Seu nome" /></div>
-            <div className="sp-profile-edit-row"><label>@username</label><input value={editForm.username} onChange={e => setEditForm(f => ({ ...f, username: e.target.value }))} placeholder="@username" /></div>
+            <div className="sp-profile-edit-row"><label>@username</label><input value={editForm.username} onChange={e => {
+              // Remove @ e qualquer caractere inválido — só letras, números, _ e .
+              const clean = e.target.value.replace(/@/g, '').replace(/[^a-zA-Z0-9_.]/g, '').slice(0, 30);
+              setEditForm(f => ({ ...f, username: clean }));
+            }} placeholder="username (sem @)" maxLength={30} /></div>
             <div className="sp-profile-edit-row"><label>Bio</label><textarea value={editForm.bio} onChange={e => setEditForm(f => ({ ...f, bio: e.target.value }))} placeholder="Fale sobre você..." rows={3} /></div>
             <div className="sp-profile-edit-row sp-profile-edit-row--toggle">
               <label>Perfil privado</label>
@@ -260,7 +338,7 @@ function ProfilePage({ user, songs, token, onClose, onPlaySong }: {
         <div className="sp-profile-page__search-wrap">
           <div className="sp-profile-search">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style={{ color: '#b3b3b3' }}><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-            <input placeholder="Buscar usuários..." value={searchQ} onChange={e => doSearch(e.target.value)} />
+            <input placeholder="@username para buscar usuários..." value={searchQ} onChange={e => doSearch(e.target.value)} />
           </div>
           {searchResults.length > 0 && (
             <div className="sp-user-results">
@@ -654,24 +732,6 @@ function AboutModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ── Lyrics Panel ─────────────────────────────────────────────────────────────
-function LyricsOverlay({ song, onClose }: { song: { title: string; artist?: string } | null; onClose: () => void }) {
-  if (!song) return null;
-  return (
-    <div className="sp-lyrics-overlay">
-      <div className="sp-lyrics-overlay__header">
-        <span style={{ fontWeight: 700, fontSize: 16 }}>Letra</span>
-        <button onClick={onClose} style={{ color: '#b3b3b3', fontSize: 20 }}>✕</button>
-      </div>
-      <div className="sp-lyrics-overlay__content">
-        <div style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>{song.title}</div>
-        <div style={{ fontSize: 14, color: '#b3b3b3', marginBottom: 32 }}>{song.artist}</div>
-        <div style={{ color: '#b3b3b3', fontSize: 15, lineHeight: 2 }}>Letra não disponível para esta faixa.</div>
-      </div>
-    </div>
-  );
-}
-
 // ── Mini Player ───────────────────────────────────────────────────────────────
 function MiniPlayer({ song, playing, onPlay, onClose }: { song: { title: string; artist?: string; coverUrl?: string } | null; playing: boolean; onPlay: () => void; onClose: () => void; }) {
   const [pos, setPos] = useState({ x: window.innerWidth - 340, y: window.innerHeight - 180 });
@@ -720,21 +780,111 @@ function MiniPlayer({ song, playing, onPlay, onClose }: { song: { title: string;
   );
 }
 
+// ── Song Carousel (Netflix-style) ────────────────────────────────────────────
+const SongCarousel = memo(function SongCarousel({ title, songs, current, onPlay, onContextMenu, getDownloadStatus, onDownload }: {
+  title: string;
+  songs: Song[];
+  current: Song | null;
+  onPlay: (song: Song) => void;
+  onContextMenu: (song: Song, x: number, y: number) => void;
+  getDownloadStatus: (id: string) => any;
+  onDownload: (id: string) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [canLeft, setCanLeft] = useState(false);
+  const [canRight, setCanRight] = useState(true);
+  const SCROLL_AMOUNT = 172 * 4; // 4 cards + gap
+
+  const updateArrows = useCallback(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    setCanLeft(el.scrollLeft > 4);
+    setCanRight(el.scrollLeft < el.scrollWidth - el.clientWidth - 4);
+  }, []);
+
+  function scroll(dir: 'left' | 'right') {
+    const el = trackRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir === 'left' ? -SCROLL_AMOUNT : SCROLL_AMOUNT, behavior: 'smooth' });
+    setTimeout(updateArrows, 350);
+  }
+
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    updateArrows();
+    el.addEventListener('scroll', updateArrows, { passive: true });
+    return () => el.removeEventListener('scroll', updateArrows);
+  }, [songs, updateArrows]);
+
+  return (
+    <div className="sp-carousel">
+      <div className="sp-carousel__header">
+        <div className="sp-carousel__title">{title}</div>
+        <div className="sp-carousel__count">{songs.length} músicas</div>
+      </div>
+      <div className="sp-carousel__track-wrap">
+        <button className="sp-carousel__arrow" onClick={() => scroll('left')} disabled={!canLeft} aria-label="Anterior">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+        </button>
+        <div ref={trackRef} className="sp-carousel__track">
+          {songs.map(song => (
+            <div key={song.id} className="sp-card"
+              style={{ opacity: song.available === false ? 0.7 : 1, outline: current?.id === song.id ? '2px solid var(--accent)' : 'none' }}
+              onClick={() => song.available !== false && onPlay(song)}
+              onContextMenu={e => { e.preventDefault(); onContextMenu(song, e.clientX, e.clientY); }}>
+              <div className="sp-card__art">
+                {song.coverUrl
+                  ? <img src={song.coverUrl} alt={song.title} loading="lazy" />
+                  : <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" style={{ color: '#535353' }}><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>}
+                {song.available !== false
+                  ? <button className="sp-card__play" onClick={e => { e.stopPropagation(); onPlay(song); }}>
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                    </button>
+                  : <div style={{ position: 'absolute', bottom: 8, right: 8, background: '#f59e0b', borderRadius: 4, padding: '2px 6px', fontSize: 10, fontWeight: 700, color: '#000' }}>EM BREVE</div>}
+                {song.available !== false && (
+                  <div style={{ position: 'absolute', bottom: 8, left: 8 }} onClick={e => e.stopPropagation()}>
+                    <DownloadButton status={getDownloadStatus(song.id)} onClick={e => { e.stopPropagation(); onDownload(song.id); }} size={18} />
+                  </div>
+                )}
+              </div>
+              <div className="sp-card__title">{song.title}</div>
+              <div className="sp-card__sub">{song.artist ?? 'Artista desconhecido'}</div>
+            </div>
+          ))}
+        </div>
+        <button className="sp-carousel__arrow sp-carousel__arrow--right" onClick={() => scroll('right')} disabled={!canRight} aria-label="Próximo">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+        </button>
+      </div>
+    </div>
+  );
+});
+
 // ── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem('token') ?? '');
   const [user, setUser] = useState<User | null>(() => { const u = localStorage.getItem('user'); return u ? JSON.parse(u) : null; });
   const [adminMode, setAdminMode] = useState(() => sessionStorage.getItem('adminMode') === 'true');
   const [songs, setSongs] = useState<Song[]>([]);
-  const [favorites, setFavorites] = useState<Song[]>([]);
-  const [queue, setQueue] = useState<Song[]>([]);
-  const [currentIdx, setCurrentIdx] = useState(0);
-  const [streamUrl, setStreamUrl] = useState('');
+  const [queue, setQueue] = useState<Song[]>(() => {
+    try { const s = sessionStorage.getItem('player_queue'); return s ? JSON.parse(s) : []; } catch { return []; }
+  });
+  const [currentIdx, setCurrentIdx] = useState(() => {
+    const i = sessionStorage.getItem('player_idx'); return i ? Number(i) : 0;
+  });
+  const [streamUrl, setStreamUrl] = useState(() => sessionStorage.getItem('player_url') ?? '');
   const [playing, setPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
+  const [currentTime, setCurrentTime] = useState(() => {
+    const t = sessionStorage.getItem('player_time'); return t ? Number(t) : 0;
+  });
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(0.8);
-  const [repeatMode, setRepeatMode] = useState<RepeatMode>('off');
+  const [volume, setVolume] = useState(() => {
+    const v = sessionStorage.getItem('player_vol'); return v ? Number(v) : 0.8;
+  });
+  const [repeatMode, setRepeatMode] = useState<RepeatMode>(() => {
+    return (sessionStorage.getItem('player_repeat') as RepeatMode) ?? 'off';
+  });
   const [shuffled, setShuffled] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
   const [search, setSearch] = useState('');
@@ -742,21 +892,27 @@ export default function App() {
   const [tab, setTab] = useState<'tudo' | 'musicas'>('tudo');
   // New UI states
   const [showProfile, setShowProfile] = useState(false);
-  const [showProfilePage, setShowProfilePage] = useState(false);
+  const [showProfilePage, setShowProfilePage] = useState(() => sessionStorage.getItem('page') === 'profile');
   const [showLyrics, setShowLyrics] = useState(false);
   const [showMini, setShowMini] = useState(false);
   const [showAvatarEdit, setShowAvatarEdit] = useState(false);
+  const [selectedPlaylist, setSelectedPlaylist] = useState<import('./hooks/usePlaylists').Playlist | null>(() => {
+    try { const s = sessionStorage.getItem('selectedPlaylist'); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
+  const [contextMenu, setContextMenu] = useState<{ song: Song; x: number; y: number } | null>(null);
   const [currentTheme, setCurrentTheme] = useState<AppTheme>(() => loadSavedTheme());
   const [currentLang, setCurrentLang] = useState<Lang>(() => loadSavedLang());
   const isPremium = (user as any)?.plan === 'premium' || (user as any)?.plan === 'family';
   const { downloadSong, getStatus } = useDownloads(token, isPremium);
+  const { playlists, create: createPlaylist, remove: removePlaylist, addSong: addToPlaylist } = usePlaylists(token);
+  const { isFavorite, toggle: toggleFavorite, favoriteIds } = useFavorites(token);
   const [premiumPopup, setPremiumPopup] = useState<{ message: string; durationLabel: string; expiresAt: string | null } | null>(null);
   // Translation helper — re-evaluates when lang changes
   const tr = (key: string) => {
     const map = TRANSLATIONS[currentLang] ?? TRANSLATIONS['pt'];
     return map[key] ?? TRANSLATIONS['pt'][key] ?? key;
   };
-  const { devices, connected, sendCommand, transferTo } = useDevices({
+  const { devices, connected, transferTo } = useDevices({
     token: token,
     onPlaybackSync: (event) => {
       if (event.action === 'pause') setPlaying(false);
@@ -774,7 +930,8 @@ export default function App() {
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const nextAudioRef = useRef<HTMLAudioElement>(null);
-  const current = queue[currentIdx] ?? null;
+  const restoredRef = useRef(false);
+  const isRestoringRef = useRef(false);
 
   // PWA install prompt
   useEffect(() => {
@@ -793,16 +950,83 @@ export default function App() {
     setShowNotif(true);
   }
 
-  function onAuth(t: string, u: User) { setToken(t); setUser(u); localStorage.setItem('token', t); localStorage.setItem('user', JSON.stringify(u)); }
-  function logout() { setToken(''); setUser(null); localStorage.clear(); sessionStorage.removeItem('adminMode'); setPlaying(false); setStreamUrl(''); setAdminMode(false); }
+  async function onAuth(t: string, u: User) {
+    setToken(t);
+    localStorage.setItem('token', t);
+    // Busca perfil completo com avatarUrl e isAdmin
+    try {
+      const profile = await apiFetch('/social/profile/me', t);
+      // Busca também se é admin
+      const meData = await apiFetch('/auth/me', t).catch(() => null);
+      const fullUser = { ...u, ...profile, isAdmin: meData?.isAdmin ?? u.isAdmin ?? false };
+      setUser(fullUser);
+      localStorage.setItem('user', JSON.stringify(fullUser));
+    } catch {
+      setUser(u);
+      localStorage.setItem('user', JSON.stringify(u));
+    }
+  }
+  function logout() { setToken(''); setUser(null); localStorage.clear(); sessionStorage.clear(); setPlaying(false); setStreamUrl(''); setQueue([]); setAdminMode(false); _refreshToken = ''; }
   function enterAdmin() { sessionStorage.setItem('adminMode', 'true'); setAdminMode(true); }
   function exitAdmin() { sessionStorage.removeItem('adminMode'); setAdminMode(false); }
 
   useEffect(() => {
     if (!token) return;
     apiFetch('/songs', token).then(setSongs).catch(() => {});
-    apiFetch('/favorites', token).then((data: any[]) => setFavorites(data.map(f => f.song))).catch(() => {});
   }, [token]);
+
+  // Persiste estado do player no sessionStorage
+  useEffect(() => { if (queue.length) sessionStorage.setItem('player_queue', JSON.stringify(queue)); }, [queue]);
+  useEffect(() => { sessionStorage.setItem('player_idx', String(currentIdx)); }, [currentIdx]);
+  useEffect(() => { sessionStorage.setItem('player_vol', String(volume)); }, [volume]);
+  useEffect(() => { sessionStorage.setItem('player_repeat', repeatMode); }, [repeatMode]);
+  useEffect(() => { sessionStorage.setItem('player_was_playing', String(playing)); }, [playing]);
+
+  // Restaura player após F5 — re-busca URL fresca (signed URLs expiram)
+  useEffect(() => {
+    if (restoredRef.current || !token) return;
+    const savedQueue = (() => { try { const s = sessionStorage.getItem('player_queue'); return s ? JSON.parse(s) : []; } catch { return []; } })();
+    const savedIdx = Number(sessionStorage.getItem('player_idx') ?? 0);
+    const savedTime = Number(sessionStorage.getItem('player_time') ?? 0);
+    const savedPlaying = sessionStorage.getItem('player_was_playing') === 'true';
+    const song = savedQueue[savedIdx];
+    if (!song?.id) return;
+    restoredRef.current = true;
+    isRestoringRef.current = true;
+
+    apiFetch(`/songs/stream/${song.id}`, token).then(data => {
+      if (!data?.url) { isRestoringRef.current = false; return; }
+      setQueue(savedQueue);
+      setCurrentIdx(savedIdx);
+      setStreamUrl(data.url);
+
+      const a = audioRef.current;
+      if (!a) { isRestoringRef.current = false; return; }
+      a.src = data.url;
+      a.volume = volume;
+      a.load();
+
+      const onCanPlay = () => {
+        isRestoringRef.current = false;
+        if (savedTime > 1) a.currentTime = savedTime;
+        if (savedPlaying) {
+          a.play().then(() => setPlaying(true)).catch(() => {});
+        }
+      };
+      a.addEventListener('canplay', onCanPlay, { once: true });
+    }).catch(() => { isRestoringRef.current = false; });
+  }, [token]);
+
+  // Persiste estado de navegação no sessionStorage
+  useEffect(() => {
+    if (showProfilePage) sessionStorage.setItem('page', 'profile');
+    else sessionStorage.removeItem('page');
+  }, [showProfilePage]);
+
+  useEffect(() => {
+    if (selectedPlaylist) sessionStorage.setItem('selectedPlaylist', JSON.stringify(selectedPlaylist));
+    else sessionStorage.removeItem('selectedPlaylist');
+  }, [selectedPlaylist]);
 
   async function playSong(song: Song, list?: Song[]) {
     if (!token) return;
@@ -815,13 +1039,21 @@ export default function App() {
     } catch (e: any) { console.warn('Stream error:', e.message); }
   }
 
-  useEffect(() => { const a = audioRef.current; if (!a || !streamUrl) return; a.src = streamUrl; a.play().catch(() => {}); }, [streamUrl]);
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !streamUrl) return;
+    if (isRestoringRef.current) return; // restauração gerencia o src diretamente
+    a.src = streamUrl;
+    a.play().catch(() => {});
+  }, [streamUrl]);
   useEffect(() => { const a = audioRef.current; if (!a) return; playing ? a.play().catch(() => {}) : a.pause(); }, [playing]);
   useEffect(() => { if (audioRef.current) audioRef.current.volume = volume; }, [volume]);
 
   function handleTimeUpdate() {
     const a = audioRef.current; if (!a) return;
     setCurrentTime(a.currentTime);
+    // Persiste posição a cada segundo
+    sessionStorage.setItem('player_time', String(Math.floor(a.currentTime)));
     const next = queue[currentIdx + 1];
     if (next && a.duration && a.currentTime >= a.duration - 30) {
       const na = nextAudioRef.current;
@@ -856,6 +1088,64 @@ export default function App() {
 
   const [accentColor, setAccentColor] = useState('18,18,18');
   const displaySongs = searchResults ?? songs;
+  const current = queue[currentIdx] ?? null;
+
+  // Agrupa músicas por álbum para os carrosséis — memoizado para não recalcular a cada render
+  const carousels = useMemo(() => {
+    const MAX_PER_ROW = 20;
+    const result: { title: string; songs: Song[] }[] = [];
+    const used = new Set<string>();
+
+    // 1. Recentes — primeiras 20 disponíveis
+    const recentes = songs.filter(s => s.available !== false).slice(0, MAX_PER_ROW);
+    if (recentes.length > 0) {
+      result.push({ title: 'Adicionadas Recentemente', songs: recentes });
+      recentes.forEach(s => used.add(s.id));
+    }
+
+    // 2. Agrupa por albumName
+    const albumMap = new Map<string, Song[]>();
+    for (const s of songs) {
+      const key = s.albumName?.trim() || null;
+      if (!key) continue;
+      if (!albumMap.has(key)) albumMap.set(key, []);
+      albumMap.get(key)!.push(s);
+    }
+
+    // Ordena álbuns por quantidade de músicas
+    const sorted = [...albumMap.entries()].sort((a, b) => b[1].length - a[1].length);
+    for (const [albumName, albumSongs] of sorted) {
+      if (result.length >= 10) break;
+      const fresh = albumSongs.filter(s => !used.has(s.id)).slice(0, MAX_PER_ROW);
+      if (fresh.length < 2) continue;
+      fresh.forEach(s => used.add(s.id));
+      result.push({ title: albumName, songs: fresh });
+    }
+
+    // 3. Agrupa por artista (músicas que sobraram)
+    const artistMap = new Map<string, Song[]>();
+    for (const s of songs) {
+      if (used.has(s.id)) continue;
+      const key = s.artist?.trim() || null;
+      if (!key) continue;
+      if (!artistMap.has(key)) artistMap.set(key, []);
+      artistMap.get(key)!.push(s);
+    }
+    const sortedArtists = [...artistMap.entries()].sort((a, b) => b[1].length - a[1].length);
+    for (const [artistName, artistSongs] of sortedArtists) {
+      if (result.length >= 12) break;
+      const fresh = artistSongs.filter(s => !used.has(s.id)).slice(0, MAX_PER_ROW);
+      if (fresh.length < 2) continue;
+      fresh.forEach(s => used.add(s.id));
+      result.push({ title: artistName, songs: fresh });
+    }
+
+    // 4. Resto sem categoria
+    const rest = songs.filter(s => !used.has(s.id)).slice(0, MAX_PER_ROW);
+    if (rest.length >= 2) result.push({ title: 'Mais Músicas', songs: rest });
+
+    return result;
+  }, [songs]);
 
   // Extract dominant color from album art
   useEffect(() => {
@@ -886,7 +1176,79 @@ export default function App() {
     if (window.location.pathname === '/auth/callback') return <AuthCallback onAuth={onAuth} />;
     return <AuthModal onAuth={onAuth} />;
   }
-  if (adminMode && user.isAdmin) return <AdminPanel token={token} userEmail={user.email} onExit={exitAdmin} />;
+
+  // Player bar e audio ficam sempre montados — independente da view
+  const persistentPlayer = (
+    <>
+      <audio ref={audioRef} onTimeUpdate={handleTimeUpdate} onLoadedMetadata={() => setDuration(audioRef.current?.duration ?? 0)} onEnded={handleEnded} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} />
+      <audio ref={nextAudioRef} preload="auto" aria-hidden="true" />
+    </>
+  );
+
+  // Mini player estilo Spotify para quando está no painel admin
+  const adminMiniPlayer = current && (
+    <div style={{
+      position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 9999,
+      background: 'linear-gradient(to right, #181818, #282828)',
+      borderTop: '1px solid #3a3a3a',
+      display: 'flex', alignItems: 'center', gap: 16,
+      padding: '10px 24px', height: 72,
+    }}>
+      {/* Capa + info */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: '0 0 280px', minWidth: 0 }}>
+        <div style={{ width: 48, height: 48, borderRadius: 4, overflow: 'hidden', flexShrink: 0, background: '#333' }}>
+          {current.coverUrl
+            ? <img src={current.coverUrl} alt={current.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><svg width="20" height="20" viewBox="0 0 24 24" fill="#b3b3b3"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg></div>
+          }
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: '#fff', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{current.title}</div>
+          <div style={{ color: '#b3b3b3', fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(current as any).artist ?? 'Artista desconhecido'}</div>
+        </div>
+      </div>
+
+      {/* Controles centrais */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
+          <button onClick={() => { if (currentIdx > 0) playSong(queue[currentIdx - 1], queue).then(() => setCurrentIdx(i => i - 1)); }}
+            style={{ background: 'none', border: 'none', color: '#b3b3b3', cursor: 'pointer', padding: 4 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          </button>
+          <button onClick={() => setPlaying(p => !p)}
+            style={{ width: 36, height: 36, borderRadius: '50%', background: '#fff', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {playing
+              ? <svg width="16" height="16" viewBox="0 0 24 24" fill="#000"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+              : <svg width="16" height="16" viewBox="0 0 24 24" fill="#000"><path d="M8 5v14l11-7z"/></svg>}
+          </button>
+          <button onClick={() => { if (currentIdx < queue.length - 1) playSong(queue[currentIdx + 1], queue).then(() => setCurrentIdx(i => i + 1)); }}
+            style={{ background: 'none', border: 'none', color: '#b3b3b3', cursor: 'pointer', padding: 4 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+          </button>
+        </div>
+        {/* Barra de progresso */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', maxWidth: 500 }}>
+          <span style={{ color: '#b3b3b3', fontSize: 11, width: 36, textAlign: 'right' }}>{fmt(currentTime)}</span>
+          <Slider value={currentTime} max={duration || 0} onChange={v => { if (audioRef.current) audioRef.current.currentTime = v; setCurrentTime(v); }} color="#1db954" className="sp-slider--seek" />
+          <span style={{ color: '#b3b3b3', fontSize: 11, width: 36 }}>{fmt(duration)}</span>
+        </div>
+      </div>
+
+      {/* Volume */}
+      <div style={{ flex: '0 0 160px', display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#b3b3b3"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
+        <Slider value={volume} max={1} onChange={v => setVolume(v)} color="#1db954" className="sp-slider--vol" />
+      </div>
+    </div>
+  );
+
+  if (adminMode && user.isAdmin) return (
+    <>
+      <AdminPanel token={token} userEmail={user.email} onExit={exitAdmin} />
+      {persistentPlayer}
+      {adminMiniPlayer}
+    </>
+  );
 
   return (
     <div className="sp-root">
@@ -976,27 +1338,40 @@ export default function App() {
               <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 5h-3v5.5a2.5 2.5 0 0 1-5 0 2.5 2.5 0 0 1 2.5-2.5c.57 0 1.08.19 1.5.5V5h4v2zM4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6z"/></svg>
               {tr('library')}
             </div>
-            <button className="sp-sidebar__create"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg> Criar</button>
+            <button className="sp-sidebar__create" onClick={async () => { const name = prompt('Nome da playlist:'); if (name?.trim()) await createPlaylist(name.trim()); }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg> Criar
+            </button>
           </div>
           <div className="sp-sidebar__list">
-            {favorites.length === 0 ? (
-              <>
-                <div className="sp-sidebar__promo"><div className="sp-sidebar__promo-title">Crie sua primeira playlist</div><div className="sp-sidebar__promo-sub">É fácil, vamos te ajudar.</div><button className="sp-sidebar__promo-btn">Criar playlist</button></div>
-                <div className="sp-sidebar__promo" style={{ marginTop: 8 }}><div className="sp-sidebar__promo-title">Músicas curtidas</div><div className="sp-sidebar__promo-sub">Salve músicas que você gosta.</div><button className="sp-sidebar__promo-btn">Explorar músicas</button></div>
-              </>
-            ) : (
-              <>
-                <div className="sp-sidebar__item sp-sidebar__item--active">
-                  <div className="sp-sidebar__item-art" style={{ background: 'linear-gradient(135deg,#450af5,#c4efd9)' }}><svg width="20" height="20" viewBox="0 0 24 24" fill="#fff"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></div>
-                  <div className="sp-sidebar__item-info"><div className="sp-sidebar__item-name sp-sidebar__item-name--active">{tr('likedSongs')}</div><div className="sp-sidebar__item-sub">Playlist · {favorites.length} músicas</div></div>
+            {/* Liked songs */}
+            <div className={`sp-sidebar__item${!selectedPlaylist ? ' sp-sidebar__item--active' : ''}`} onClick={() => setSelectedPlaylist(null)}>
+              <div className="sp-sidebar__item-art" style={{ background: 'linear-gradient(135deg,#450af5,#c4efd9)' }}><svg width="20" height="20" viewBox="0 0 24 24" fill="#fff"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></div>
+              <div className="sp-sidebar__item-info">
+                <div className={`sp-sidebar__item-name${!selectedPlaylist ? ' sp-sidebar__item-name--active' : ''}`}>{tr('likedSongs')}</div>
+                <div className="sp-sidebar__item-sub">Playlist · {favoriteIds.size} músicas</div>
+              </div>
+            </div>
+            {/* User playlists */}
+            {playlists.map(pl => (
+              <div key={pl.id} className={`sp-sidebar__item${selectedPlaylist?.id === pl.id ? ' sp-sidebar__item--active' : ''}`}
+                onClick={() => setSelectedPlaylist(pl)}>
+                <div className="sp-sidebar__item-art" style={{ background: '#2a2a2a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style={{ color: '#b3b3b3' }}><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
                 </div>
-                {favorites.slice(0, 20).map(song => (
-                  <div key={song.id} className={`sp-sidebar__item${current?.id === song.id ? ' sp-sidebar__item--active' : ''}`} onClick={() => song.available !== false && playSong(song, favorites)}>
-                    <div className="sp-sidebar__item-art">{song.coverUrl ? <img src={song.coverUrl} alt={song.title} /> : <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style={{ color: '#b3b3b3' }}><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>}</div>
-                    <div className="sp-sidebar__item-info"><div className={`sp-sidebar__item-name${current?.id === song.id ? ' sp-sidebar__item-name--active' : ''}`}>{song.title}</div><div className="sp-sidebar__item-sub">{song.artist ?? 'Artista desconhecido'}</div></div>
-                  </div>
-                ))}
-              </>
+                <div className="sp-sidebar__item-info">
+                  <div className={`sp-sidebar__item-name${selectedPlaylist?.id === pl.id ? ' sp-sidebar__item-name--active' : ''}`}>{pl.title}</div>
+                  <div className="sp-sidebar__item-sub">Playlist · {pl.songs?.length ?? 0} músicas</div>
+                </div>
+                <button style={{ color: '#b3b3b3', padding: '4px', marginLeft: 'auto', flexShrink: 0, fontSize: 16 }}
+                  onClick={e => { e.stopPropagation(); if (confirm(`Excluir "${pl.title}"?`)) removePlaylist(pl.id); }}>✕</button>
+              </div>
+            ))}
+            {playlists.length === 0 && favoriteIds.size === 0 && (
+              <div className="sp-sidebar__promo">
+                <div className="sp-sidebar__promo-title">Crie sua primeira playlist</div>
+                <div className="sp-sidebar__promo-sub">É fácil, vamos te ajudar.</div>
+                <button className="sp-sidebar__promo-btn" onClick={async () => { const name = prompt('Nome da playlist:'); if (name?.trim()) await createPlaylist(name.trim()); }}>Criar playlist</button>
+              </div>
             )}
           </div>
         </aside>
@@ -1007,7 +1382,50 @@ export default function App() {
             <button className={`sp-main__tab${tab === 'musicas' && !search ? ' sp-main__tab--active' : ''}`} onClick={() => { setTab('musicas'); setSearch(''); setSearchResults(null); }}>{tr('search')}</button>
           </div>
           <div className="sp-main__content">
-            {search || searchResults ? (
+            {selectedPlaylist ? (
+              /* ── Playlist detail view ── */
+              <div>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: 24, marginBottom: 32, padding: '8px 0' }}>
+                  <div style={{ width: 160, height: 160, borderRadius: 8, background: '#2a2a2a', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }}>
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="currentColor" style={{ color: '#535353' }}><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', color: '#b3b3b3', marginBottom: 8 }}>Playlist</div>
+                    <div style={{ fontSize: 36, fontWeight: 900, marginBottom: 8 }}>{selectedPlaylist.title}</div>
+                    <div style={{ color: '#b3b3b3', fontSize: 14 }}>{selectedPlaylist.songs?.length ?? 0} músicas</div>
+                    <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+                      {selectedPlaylist.songs?.length > 0 && (
+                        <button className="sp-card__play" style={{ position: 'static', opacity: 1, transform: 'none', width: 56, height: 56 }}
+                          onClick={() => { const songs = selectedPlaylist.songs.map(s => s.song as any); if (songs.length) playSong(songs[0], songs); }}>
+                          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                        </button>
+                      )}
+                      <button onClick={() => removePlaylist(selectedPlaylist.id).then(() => setSelectedPlaylist(null))}
+                        style={{ background: 'none', border: '1px solid #535353', color: '#b3b3b3', borderRadius: 500, padding: '8px 20px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                        Excluir playlist
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="sp-song-list">
+                  {selectedPlaylist.songs?.length === 0 ? (
+                    <div className="sp-empty"><div className="sp-empty__icon">🎵</div><div className="sp-empty__title">Playlist vazia</div><div style={{ color: '#b3b3b3' }}>Adicione músicas clicando em ⋯ em qualquer música</div></div>
+                  ) : selectedPlaylist.songs?.map((item, i) => {
+                    const song = item.song as any;
+                    return (
+                      <div key={song.id} className="sp-song-row" onClick={() => playSong(song, selectedPlaylist.songs.map(s => s.song as any))}>
+                        <div className="sp-song-row__num">{current?.id === song.id ? <span style={{ color: 'var(--accent)' }}>♪</span> : i + 1}</div>
+                        <div className="sp-song-row__play"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div>
+                        <div className="sp-song-row__info"><div className={`sp-song-row__title${current?.id === song.id ? ' sp-song-row__title--active' : ''}`}>{song.title}</div><div className="sp-song-row__artist">{song.artist ?? 'Artista desconhecido'}</div></div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span className="sp-song-row__dur">{Math.floor(song.duration/60)}:{String(song.duration%60).padStart(2,'0')}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : search || searchResults ? (
               <div className="sp-section">
                 <div className="sp-section__header"><div className="sp-section__title">{search ? `Resultados para "${search}"` : 'Todas as músicas'}</div></div>
                 {displaySongs.length === 0 ? <div className="sp-empty"><div className="sp-empty__icon">🔍</div><div className="sp-empty__title">Nenhum resultado</div></div> : (
@@ -1032,34 +1450,28 @@ export default function App() {
               <>
                 <div className="sp-main__greeting">{new Date().getHours() < 12 ? tr('goodMorning') : new Date().getHours() < 18 ? tr('goodAfternoon') : tr('goodEvening')}</div>
                 <div className="sp-quick-grid">
-                  {songs.slice(0, 6).map(song => (
-                    <div key={song.id} className="sp-quick-item" onClick={() => song.available !== false && playSong(song, songs)}>
+                  {songs.filter(s => s.available !== false).slice(0, 6).map(song => (
+                    <div key={song.id} className="sp-quick-item" onClick={() => playSong(song, songs)}>
                       <div className="sp-quick-item__art">{song.coverUrl ? <img src={song.coverUrl} alt={song.title} /> : <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style={{ color: '#b3b3b3' }}><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>}</div>
                       <div className="sp-quick-item__title">{song.title}</div>
-                      {song.available !== false && <button className="sp-quick-item__play" onClick={e => { e.stopPropagation(); playSong(song, songs); }}><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>}
+                      <button className="sp-quick-item__play" onClick={e => { e.stopPropagation(); playSong(song, songs); }}><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
                     </div>
                   ))}
                 </div>
-                <div className="sp-section">
-                  <div className="sp-section__header"><div className="sp-section__title">{tr('allSongs')}</div><a className="sp-section__see-all">{tr('browseAll')}</a></div>
-                  <div className="sp-cards">
-                    {songs.map(song => (
-                      <div key={song.id} className="sp-card" onClick={() => song.available !== false && playSong(song, songs)} style={{ opacity: song.available === false ? 0.7 : 1 }}>
-                        <div className="sp-card__art">
-                          {song.coverUrl ? <img src={song.coverUrl} alt={song.title} /> : <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" style={{ color: '#535353' }}><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>}
-                          {song.available !== false ? <button className="sp-card__play" onClick={e => { e.stopPropagation(); playSong(song, songs); }}><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button> : <div style={{ position: 'absolute', bottom: 8, right: 8, background: '#f59e0b', borderRadius: 4, padding: '2px 6px', fontSize: 10, fontWeight: 700, color: '#000' }}>EM BREVE</div>}
-                          {song.available !== false && (
-                            <div style={{ position: 'absolute', bottom: 8, left: 8 }} onClick={e => e.stopPropagation()}>
-                              <DownloadButton status={getStatus(song.id)} onClick={e => { e.stopPropagation(); downloadSong(song.id); }} size={18} />
-                            </div>
-                          )}
-                        </div>
-                        <div className="sp-card__title">{song.title}</div>
-                        <div className="sp-card__sub">{song.artist ?? 'Artista desconhecido'}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+
+                {/* Carrosséis por álbum/artista estilo Netflix */}
+                {carousels.map(({ title, songs: rowSongs }) => (
+                  <SongCarousel
+                    key={title}
+                    title={title}
+                    songs={rowSongs}
+                    current={current}
+                    onPlay={(song) => playSong(song, rowSongs)}
+                    onContextMenu={(song, x, y) => setContextMenu({ song, x, y })}
+                    getDownloadStatus={getStatus}
+                    onDownload={downloadSong}
+                  />
+                ))}
               </>
             )}
           </div>
@@ -1080,8 +1492,18 @@ export default function App() {
         </div>
       </div>
 
-      {/* LYRICS OVERLAY */}
-      {showLyrics && <LyricsOverlay song={current} onClose={() => setShowLyrics(false)} />}
+      {/* LYRICS OVERLAY — usa LyricsPanel com letras sincronizadas */}
+      {showLyrics && (
+        <div className="sp-lyrics-overlay">
+          <div className="sp-lyrics-overlay__header">
+            <span style={{ fontWeight: 700, fontSize: 16 }}>Letra — {current?.title}</span>
+            <button onClick={() => setShowLyrics(false)} style={{ color: '#b3b3b3', fontSize: 20 }}>✕</button>
+          </div>
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            <LyricsPanel songId={current?.id ?? null} currentTime={currentTime} token={token} />
+          </div>
+        </div>
+      )}
 
       {/* PROFILE PAGE */}
       {showProfilePage && (
@@ -1163,7 +1585,10 @@ export default function App() {
                 <div className={`sp-player__title${playing ? ' sp-player__title--active' : ''}`}>{current.title}</div>
                 <div className="sp-player__artist">{current.artist ?? 'Artista desconhecido'}{current.albumName ? ` · ${current.albumName}` : ''}</div>
               </div>
-              <button className="sp-player__like" title="Curtir"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button>
+              <button className="sp-player__like" title="Curtir" onClick={() => current && toggleFavorite(current.id)}
+                style={{ color: current && isFavorite(current.id) ? 'var(--accent)' : undefined }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill={current && isFavorite(current.id) ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+              </button>
             </>
           )}
         </div>
@@ -1213,8 +1638,52 @@ export default function App() {
         </div>
       </footer>
 
-      <audio ref={audioRef} onTimeUpdate={handleTimeUpdate} onLoadedMetadata={() => setDuration(audioRef.current?.duration ?? 0)} onEnded={handleEnded} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} />
-      <audio ref={nextAudioRef} preload="auto" aria-hidden="true" />
+      {persistentPlayer}
+
+      {/* CONTEXT MENU */}
+      {contextMenu && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 800 }} onClick={() => setContextMenu(null)}>
+          <div style={{
+            position: 'fixed', left: contextMenu.x, top: contextMenu.y,
+            background: '#282828', borderRadius: 8, boxShadow: '0 16px 48px rgba(0,0,0,.8)',
+            minWidth: 200, overflow: 'hidden', zIndex: 801,
+          }} onClick={e => e.stopPropagation()}>
+            <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 16px', color: '#fff', fontSize: 14, background: 'none', border: 'none', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,.07)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+              onClick={() => { playSong(contextMenu.song, songs); setContextMenu(null); }}>
+              ▶ Reproduzir
+            </button>
+            <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 16px', color: isFavorite(contextMenu.song.id) ? 'var(--accent)' : '#fff', fontSize: 14, background: 'none', border: 'none', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,.07)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+              onClick={() => { toggleFavorite(contextMenu.song.id); setContextMenu(null); }}>
+              {isFavorite(contextMenu.song.id) ? '♥ Remover dos favoritos' : '♡ Adicionar aos favoritos'}
+            </button>
+            {playlists.length > 0 && (
+              <div style={{ borderTop: '1px solid #3a3a3a', padding: '4px 0' }}>
+                <div style={{ padding: '8px 16px 4px', fontSize: 11, fontWeight: 700, color: '#6a6a6a', textTransform: 'uppercase', letterSpacing: 1 }}>Adicionar à playlist</div>
+                {playlists.map(pl => (
+                  <button key={pl.id} style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 16px', color: '#fff', fontSize: 13, background: 'none', border: 'none', cursor: 'pointer' }}
+                    onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,.07)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+                    onClick={() => { addToPlaylist(pl.id, contextMenu.song.id); setContextMenu(null); }}>
+                    {pl.title}
+                  </button>
+                ))}
+              </div>
+            )}
+            {isPremium && (
+              <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 16px', color: '#fff', fontSize: 14, background: 'none', border: 'none', cursor: 'pointer', borderTop: '1px solid #3a3a3a' }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,.07)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+                onClick={() => { downloadSong(contextMenu.song.id); setContextMenu(null); }}>
+                ⬇ Baixar
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

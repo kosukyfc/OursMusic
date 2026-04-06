@@ -35,7 +35,8 @@ class _PremiumAvatarState extends State<PremiumAvatar>
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 600))
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 600))
       ..repeat(reverse: true);
     _pulse = Tween<double>(begin: 0.7, end: 1.0).animate(
       CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut),
@@ -83,17 +84,23 @@ class _PremiumAvatarState extends State<PremiumAvatar>
                   shape: BoxShape.circle,
                   color: kAccent,
                   boxShadow: isPremium && widget.playing
-                    ? [
-                        BoxShadow(color: kAccent.withOpacity(0.6 * glow), blurRadius: 12 * glow, spreadRadius: 2 * glow),
-                        BoxShadow(color: kAccent.withOpacity(0.3 * glow), blurRadius: 24 * glow),
-                      ]
-                    : null,
+                      ? [
+                          BoxShadow(
+                              color: kAccent.withValues(alpha: 0.6 * glow),
+                              blurRadius: 12 * glow,
+                              spreadRadius: 2 * glow),
+                          BoxShadow(
+                              color: kAccent.withValues(alpha: 0.3 * glow),
+                              blurRadius: 24 * glow),
+                        ]
+                      : null,
                 ),
                 clipBehavior: Clip.antiAlias,
                 child: widget.avatarUrl != null
-                  ? Image.network(widget.avatarUrl!, fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _initials())
-                  : _initials(),
+                    ? Image.network(widget.avatarUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => _initials())
+                    : _initials(),
               );
             },
           ),
@@ -103,15 +110,15 @@ class _PremiumAvatarState extends State<PremiumAvatar>
   }
 
   Widget _initials() => Center(
-    child: Text(
-      widget.name.isNotEmpty ? widget.name[0].toUpperCase() : '?',
-      style: TextStyle(
-        color: Colors.black,
-        fontSize: widget.size * 0.4,
-        fontWeight: FontWeight.w800,
-      ),
-    ),
-  );
+        child: Text(
+          widget.name.isNotEmpty ? widget.name[0].toUpperCase() : '?',
+          style: TextStyle(
+            color: Colors.black,
+            fontSize: widget.size * 0.4,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      );
 }
 
 class _NeonRingPainter extends CustomPainter {
@@ -129,7 +136,7 @@ class _NeonRingPainter extends CustomPainter {
 
     // Neon ring
     final ringPaint = Paint()
-      ..color = kAccent.withOpacity(0.4 + pulse * 0.5)
+      ..color = kAccent.withValues(alpha: 0.4 + pulse * 0.5)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2
       ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6 * pulse);
@@ -139,12 +146,12 @@ class _NeonRingPainter extends CustomPainter {
 
     // Lightning bolts
     final boltPaint = Paint()
-      ..color = kAccent.withOpacity(0.7 * pulse)
+      ..color = kAccent.withValues(alpha: 0.7 * pulse)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
 
-    final numBolts = 4;
+    const numBolts = 4;
     for (int i = 0; i < numBolts; i++) {
       final angle = (pi * 2 * i) / numBolts;
       final startX = cx + cos(angle) * r;
@@ -155,12 +162,14 @@ class _NeonRingPainter extends CustomPainter {
         final nx = x + cos(angle) * 5 + (_rng.nextDouble() - 0.5) * 6;
         final ny = y + sin(angle) * 5 + (_rng.nextDouble() - 0.5) * 6;
         path.lineTo(nx, ny);
-        x = nx; y = ny;
+        x = nx;
+        y = ny;
       }
       canvas.drawPath(path, boltPaint);
     }
   }
 
   @override
-  bool shouldRepaint(_NeonRingPainter old) => old.pulse != pulse || old.playing != playing;
+  bool shouldRepaint(_NeonRingPainter old) =>
+      old.pulse != pulse || old.playing != playing;
 }

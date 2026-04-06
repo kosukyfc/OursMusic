@@ -14,14 +14,19 @@ export class SocialController {
     return this.socialService.searchUsers(q ?? '', req.user.userId);
   }
 
+  @Get('profile/me')
+  getMyProfile(@Req() req: AuthReq) {
+    return this.socialService.getProfile(req.user.userId, req.user.userId);
+  }
+
   @Get('profile/:id')
   getProfile(@Param('id') id: string, @Req() req: AuthReq) {
     return this.socialService.getProfile(id, req.user.userId);
   }
 
-  @Get('profile/me')
-  getMyProfile(@Req() req: AuthReq) {
-    return this.socialService.getProfile(req.user.userId, req.user.userId);
+  @Get('following')
+  getMyFollowing(@Req() req: AuthReq) {
+    return this.socialService.getFollowing(req.user.userId, req.user.userId);
   }
 
   @Get('profile/:id/followers')

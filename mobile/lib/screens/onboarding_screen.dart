@@ -61,20 +61,27 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   void _toggle(String name) {
     setState(() {
-      if (_selected.contains(name)) _selected.remove(name);
-      else _selected.add(name);
+      if (_selected.contains(name)) {
+        _selected.remove(name);
+      } else {
+        _selected.add(name);
+      }
     });
   }
 
   Future<void> _next() async {
     if (_step == 0) {
-      setState(() { _step = 1; _selected.clear(); });
+      setState(() {
+        _step = 1;
+        _selected.clear();
+      });
       return;
     }
     // Save preferences and go to home
     setState(() => _loading = true);
     try {
-      await Api.post('/social/profile', {'bio': 'Gosta de: ${_selected.join(', ')}'});
+      await Api.post(
+          '/social/profile', {'bio': 'Gosta de: ${_selected.join(', ')}'});
     } catch (_) {}
     if (mounted) widget.onDone();
   }
@@ -88,23 +95,38 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           // Header
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               // Progress dots
-              Row(children: List.generate(2, (i) => Container(
-                width: i == _step ? 24 : 8, height: 8,
-                margin: const EdgeInsets.only(right: 6),
-                decoration: BoxDecoration(
-                  color: i == _step ? kAccent : const Color(0xFF3A3A3A),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ))),
+              Row(
+                  children: List.generate(
+                      2,
+                      (i) => Container(
+                            width: i == _step ? 24 : 8,
+                            height: 8,
+                            margin: const EdgeInsets.only(right: 6),
+                            decoration: BoxDecoration(
+                              color: i == _step
+                                  ? kAccent
+                                  : const Color(0xFF3A3A3A),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ))),
               const SizedBox(height: 20),
-              Text(_title, style: const TextStyle(color: kTextPrimary, fontSize: 26, fontWeight: FontWeight.w900)),
+              Text(_title,
+                  style: const TextStyle(
+                      color: kTextPrimary,
+                      fontSize: 26,
+                      fontWeight: FontWeight.w900)),
               const SizedBox(height: 6),
-              Text(_subtitle, style: const TextStyle(color: kTextSecond, fontSize: 14)),
+              Text(_subtitle,
+                  style: const TextStyle(color: kTextSecond, fontSize: 14)),
               const SizedBox(height: 4),
-              Text('${_selected.length} selecionados', style: TextStyle(
-                color: _canContinue ? kAccent : kTextMuted, fontSize: 12, fontWeight: FontWeight.w700)),
+              Text('${_selected.length} selecionados',
+                  style: TextStyle(
+                      color: _canContinue ? kAccent : kTextMuted,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700)),
             ]),
           ),
 
@@ -113,8 +135,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             child: GridView.builder(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2, childAspectRatio: 1.6,
-                crossAxisSpacing: 10, mainAxisSpacing: 10,
+                crossAxisCount: 2,
+                childAspectRatio: 1.6,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 10,
               ),
               itemCount: _current.length,
               itemBuilder: (ctx, i) {
@@ -129,18 +153,38 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     decoration: BoxDecoration(
                       color: color,
                       borderRadius: BorderRadius.circular(10),
-                      border: selected ? Border.all(color: Colors.white, width: 3) : null,
-                      boxShadow: selected ? [BoxShadow(color: color.withOpacity(0.5), blurRadius: 12, spreadRadius: 2)] : null,
+                      border: selected
+                          ? Border.all(color: Colors.white, width: 3)
+                          : null,
+                      boxShadow: selected
+                          ? [
+                              BoxShadow(
+                                  color: color.withValues(alpha: 0.5),
+                                  blurRadius: 12,
+                                  spreadRadius: 2)
+                            ]
+                          : null,
                     ),
                     child: Stack(children: [
-                      Positioned(bottom: 12, left: 12,
-                        child: Text(name, style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w800))),
+                      Positioned(
+                          bottom: 12,
+                          left: 12,
+                          child: Text(name,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w800))),
                       if (selected)
-                        Positioned(top: 8, right: 8,
+                        Positioned(
+                          top: 8,
+                          right: 8,
                           child: Container(
-                            width: 24, height: 24,
-                            decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
-                            child: const Icon(Icons.check, color: Colors.black, size: 16),
+                            width: 24,
+                            height: 24,
+                            decoration: const BoxDecoration(
+                                color: Colors.white, shape: BoxShape.circle),
+                            child: const Icon(Icons.check,
+                                color: Colors.black, size: 16),
                           ),
                         ),
                     ]),
@@ -163,12 +207,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   disabledBackgroundColor: const Color(0xFF2A2A2A),
                   disabledForegroundColor: kTextMuted,
                   padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(500)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(500)),
                 ),
                 child: _loading
-                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2))
-                  : Text(_step == 0 ? 'Continuar' : 'Comecar a ouvir',
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                            color: Colors.black, strokeWidth: 2))
+                    : Text(_step == 0 ? 'Continuar' : 'Comecar a ouvir',
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w800)),
               ),
             ),
           ),

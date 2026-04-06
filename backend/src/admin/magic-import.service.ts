@@ -248,6 +248,303 @@ export class MagicImportService {
     } catch { return ''; }
   }
 
+  // ── Import by URL ─────────────────────────────────────────────────────────
+
+  /**
+   * POST /admin/magic-import/pending
+   * Busca todas as músicas com available=false (tag "Em Breve") e tenta
+   * baixar o áudio via Magic Import (yt-dlp + YouTube).
+   *
+   * Estratégia:
+   * 1. Agrupa por albumName + artist → tenta magicImport por álbum (melhor qualidade)
+   * 2. Faixas sem álbum → tenta individualmente pelo título + artista
+   */
+  async magicImportPending(
+    userId: string,
+    jobId: string,
+  ): Promise<MagicImportResult & { importType: string }> {
+    const pending = await this.prisma.song.findMany({
+      where: { available: false },
+      select: { id: true, title: true, artist: true, albumName: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (pending.length === 0) {
+      this.emitProgress({ jobId, track: '', trackIndex: 0, totalTracks: 0, percent: 100, status: 'done', done: true });
+      return { imported: 0, skipped: 0, errors: 0, tracks: [], importType: 'pending' };
+    }
+
+    // Agrupa por "artist|albumName" para importar álbuns inteiros de uma vez
+    const albumGroups = new Map<string, typeof pending>();
+    const soloTracks: typeof pending = [];
+
+    for (const song of pending) {
+      if (song.artist && song.albumName) {
+        const key = `${song.artist.toLowerCase()}|${song.albumName.toLowerCase()}`;
+        if (!albumGroups.has(key)) albumGroups.set(key, []);
+        albumGroups.get(key)!.push(song);
+      } else {
+        soloTracks.push(song);
+      }
+    }
+
+    const totalJobs = albumGroups.size + soloTracks.length;
+    let jobsDone = 0;
+    let imported = 0, skipped = 0, errors = 0;
+    const tracks: { title: string; status: string }[] = [];
+
+    const emitJob = (trackTitle: string, status: MagicImportProgress['status'], message?: string) => {
+      const percent = Math.round((jobsDone / totalJobs) * 100);
+      this.emitProgress({ jobId, track: trackTitle, trackIndex: jobsDone, totalTracks: totalJobs, percent, status, message });
+    };
+
+    // 1. Importa álbuns agrupados
+    for (const [key, songs] of albumGroups) {
+      const artist = songs[0].artist!;
+      const album = songs[0].albumName!;
+      const label = `${artist} — ${album}`;
+      emitJob(label, 'downloading');
+
+      try {
+        // Usa um sub-jobId para não conflitar com o SSE principal
+        const subJobId = `${jobId}-${key.replace(/[^a-z0-9]/g, '')}`;
+        const result = await this.magicImport(userId, artist, album, songs.length + 5, subJobId);
+        imported += result.imported;
+        skipped += result.skipped;
+        errors += result.errors;
+        tracks.push(...result.tracks);
+        emitJob(label, 'done');
+      } catch (err: any) {
+        errors += songs.length;
+        tracks.push(...songs.map(s => ({ title: s.title, status: `error: ${err.message}` })));
+        emitJob(label, 'error', err.message);
+      }
+      jobsDone++;
+    }
+
+    // 2. Importa faixas individuais (sem álbum)
+    for (const song of soloTracks) {
+      emitJob(song.title, 'downloading');
+
+      try {
+        // Busca no Deezer pelo título + artista para obter álbum e então faz magic import
+        const meta = await this.spotifyService.deepEnrichTrack(song.title, song.artist ?? null, null);
+
+        if (meta?.album && meta?.artist) {
+          const subJobId = `${jobId}-solo-${song.id}`;
+          const result = await this.magicImport(userId, meta.artist, meta.album, 1, subJobId);
+          // Verifica se a faixa específica foi importada
+          const found = result.tracks.find(t =>
+            t.title.toLowerCase().includes(song.title.toLowerCase().slice(0, 10)) ||
+            song.title.toLowerCase().includes(t.title.toLowerCase().slice(0, 10))
+          );
+          if (found && !found.status.includes('error')) {
+            imported++;
+            tracks.push({ title: song.title, status: 'imported' });
+          } else {
+            // Tenta buscar direto no YouTube pelo título + artista
+            const ytQuery = song.artist ? `${song.artist} - ${song.title}` : song.title;
+            const ytUrl = await this.findYoutubeUrl('', song.artist ?? '', song.title);
+            if (ytUrl) {
+              await this.downloadAndSaveSingle(userId, song, ytUrl, meta);
+              imported++;
+              tracks.push({ title: song.title, status: 'imported' });
+            } else {
+              skipped++;
+              tracks.push({ title: song.title, status: 'skipped (not found on YouTube)' });
+            }
+          }
+        } else {
+          // Sem metadados suficientes — tenta buscar no YouTube diretamente
+          const ytUrl = await this.findYoutubeUrl('', song.artist ?? '', song.title);
+          if (ytUrl) {
+            await this.downloadAndSaveSingle(userId, song, ytUrl, meta);
+            imported++;
+            tracks.push({ title: song.title, status: 'imported' });
+          } else {
+            skipped++;
+            tracks.push({ title: song.title, status: 'skipped (not found)' });
+          }
+        }
+        emitJob(song.title, 'done');
+      } catch (err: any) {
+        errors++;
+        tracks.push({ title: song.title, status: `error: ${err.message}` });
+        emitJob(song.title, 'error', err.message);
+      }
+      jobsDone++;
+    }
+
+    this.emitProgress({ jobId, track: '', trackIndex: totalJobs, totalTracks: totalJobs, percent: 100, status: 'done', done: true });
+    this.progressSubs.delete(jobId);
+
+    return { imported, skipped, errors, tracks, importType: 'pending' };
+  }
+
+  /**
+   * Baixa uma faixa individual do YouTube e salva no banco atualizando a song existente.
+   */
+  private async downloadAndSaveSingle(
+    userId: string,
+    song: { id: string; title: string; artist: string | null; albumName: string | null },
+    ytUrl: string,
+    meta: import('../spotify/spotify.service').TrackMeta | null,
+  ): Promise<void> {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'magic-single-'));
+    try {
+      const safeTitle = song.title.replace(/[<>:"/\\|?*\u0080-\uffff]/g, '_').trim();
+      const outputTemplate = path.join(tmpDir, 'audio.%(ext)s');
+      await this.downloadTrack(ytUrl, outputTemplate);
+
+      const files = await fs.readdir(tmpDir);
+      if (!files.length) throw new Error('Download failed');
+
+      const finalPath = path.join(tmpDir, files[0]);
+      const mp3Path = finalPath.endsWith('.mp3') ? finalPath : finalPath.replace(/\.[^.]+$/, '.mp3');
+      if (finalPath !== mp3Path) await fs.rename(finalPath, mp3Path);
+
+      // Baixa capa se disponível
+      let coverBuffer: Buffer | undefined;
+      const coverUrl = meta?.coverUrl ?? null;
+      if (coverUrl) {
+        try { coverBuffer = Buffer.from(await (await fetch(coverUrl)).arrayBuffer()); } catch { /* ignore */ }
+      }
+
+      const artist = meta?.artist ?? song.artist ?? 'Unknown';
+      const albumName = meta?.album ?? song.albumName ?? '';
+
+      this.tagMp3(mp3Path, {
+        title: song.title, artist, album: albumName,
+        year: '', genre: '', trackNumber: 1, coverBuffer,
+      });
+
+      const fileBuffer = await fs.readFile(mp3Path);
+      const s3Key = `${artist.replace(/[^a-zA-Z0-9 _-]/g, '_')}/${albumName.replace(/[^a-zA-Z0-9 _-]/g, '_') || 'Singles'}/${safeTitle}.mp3`;
+      const storagePath = await this.s3Adapter.upload(fileBuffer, s3Key, 'audio/mpeg');
+
+      await this.prisma.song.update({
+        where: { id: song.id },
+        data: {
+          artist: meta?.artist ?? song.artist,
+          albumName: meta?.album ?? song.albumName,
+          coverUrl: meta?.coverUrl ?? null,
+          storageType: StorageType.s3,
+          storagePath,
+          fileSize: BigInt(fileBuffer.length),
+          mimeType: 'audio/mpeg',
+          available: true,
+          uploadedBy: userId,
+          ...(meta?.durationMs ? { duration: Math.round(meta.durationMs / 1000) } : {}),
+        },
+      });
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  /**
+   * Resolve a Spotify/Deezer URL (or artist name) and dispatch to the appropriate import flow.
+   * - album URL → magicImport (full download with audio)
+   * - track URL → magicImport single track
+   * - playlist/artist URL → catalog import (metadata only, no audio)
+   * - plain text (artist name) → catalog import top tracks from Deezer
+   */
+  async magicImportByUrl(
+    userId: string,
+    urlOrName: string,
+    maxTracks: number,
+    jobId: string,
+  ): Promise<MagicImportResult & { importType: string }> {
+    const isUrl = urlOrName.startsWith('http://') || urlOrName.startsWith('https://');
+
+    // Try to resolve as album first (best quality path — full audio download)
+    if (isUrl) {
+      const albumInfo = await this.spotifyService.resolveUrlToAlbum(urlOrName);
+      if (albumInfo) {
+        const result = await this.magicImport(userId, albumInfo.artist, albumInfo.album, maxTracks, jobId);
+        return { ...result, importType: 'album' };
+      }
+    }
+
+    // For track/playlist/artist URLs or plain artist name: import as catalog (metadata only)
+    let name: string;
+    let tracks: import('../spotify/spotify.service').TrackMeta[];
+    let type: string;
+
+    if (isUrl) {
+      const resolved = await this.spotifyService.importPlaylistByUrl(urlOrName);
+      name = resolved.name;
+      tracks = resolved.tracks;
+      type = resolved.type;
+    } else {
+      // Plain text = artist name search
+      tracks = await this.spotifyService.searchCatalog(`artist:${urlOrName}`, maxTracks);
+      name = urlOrName;
+      type = 'artist';
+    }
+
+    const limited = tracks.slice(0, maxTracks);
+    const total = limited.length;
+
+    if (total === 0) {
+      this.emitProgress({ jobId, track: '', trackIndex: 0, totalTracks: 0, percent: 100, status: 'done', done: true });
+      return { imported: 0, skipped: 0, errors: 0, tracks: [], importType: type };
+    }
+
+    let imported = 0, skipped = 0, errors = 0;
+    const results: { title: string; status: string }[] = [];
+
+    for (let i = 0; i < limited.length; i++) {
+      const t = limited[i];
+      this.emitProgress({ jobId, track: t.title, trackIndex: i, totalTracks: total, percent: Math.round((i / total) * 100), status: 'uploading' });
+
+      try {
+        const existing = await this.prisma.song.findFirst({
+          where: {
+            OR: [
+              t.deezerId ? { deezerId: t.deezerId } : { id: '' },
+              { title: { equals: t.title, mode: 'insensitive' }, artist: { equals: t.artist, mode: 'insensitive' } },
+            ],
+          },
+        });
+
+        if (existing) {
+          skipped++;
+          results.push({ title: t.title, status: 'skipped (already exists)' });
+        } else {
+          await this.prisma.song.create({
+            data: {
+              title: t.title,
+              artist: t.artist || null,
+              albumName: t.album || null,
+              coverUrl: t.coverUrl || null,
+              previewUrl: t.previewUrl || null,
+              deezerId: t.deezerId || null,
+              spotifyId: t.spotifyId || null,
+              popularity: t.popularity || 0,
+              duration: Math.round(t.durationMs / 1000),
+              storageType: 'nas' as any,
+              storagePath: '',
+              mimeType: 'audio/mpeg',
+              available: false,
+              uploadedBy: userId,
+            },
+          });
+          imported++;
+          results.push({ title: t.title, status: 'imported (catalog)' });
+        }
+      } catch (err: any) {
+        errors++;
+        results.push({ title: t.title, status: `error: ${err.message}` });
+      }
+    }
+
+    this.emitProgress({ jobId, track: '', trackIndex: total, totalTracks: total, percent: 100, status: 'done', done: true });
+    this.progressSubs.delete(jobId);
+
+    return { imported, skipped, errors, tracks: results, importType: type };
+  }
+
   // ── Main import ───────────────────────────────────────────────────────────
 
   async magicImport(

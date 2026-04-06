@@ -140,6 +140,7 @@ model Song {
   spotifyId   String?     @map("spotify_id")
   deezerId    String?     @map("deezer_id")
   popularity  Int?
+  genre       String?
   available   Boolean     @default(true)
   previewUrl  String?     @map("preview_url")
   lyrics      String?

@@ -1,6 +1,6 @@
+import { API_URL } from '../config';
+
 /**
- * useDevices — manages WebSocket connection to DevicesGateway
- *
  * CLOCK SYNC ALGORITHM:
  *   1. On connect, send clock:ping every 2s for first 10 pings to build offset history
  *   2. Each pong: offset = serverTime - (Date.now() - rtt/2)
@@ -61,7 +61,7 @@ export function useDevices({ token, onPlaybackSync, onPremiumGranted }: UseDevic
   useEffect(() => {
     if (!token) return;
 
-    const socket = io('http://localhost:3000/devices', {
+    const socket = io(`${API_URL}/devices`, {
       auth: { token },
       transports: ['websocket'],
     });
@@ -92,7 +92,7 @@ export function useDevices({ token, onPlaybackSync, onPremiumGranted }: UseDevic
     });
 
     // Periodic clock sync from server
-    socket.on('clock:sync', ({ serverTime }: { serverTime: number }) => {
+    socket.on('clock:sync', (_data: { serverTime: number }) => {
       const id = `sync-${Date.now()}`;
       pingTimestamps.current.set(id, performance.now());
       socket.emit('clock:ping', { id });
@@ -101,12 +101,11 @@ export function useDevices({ token, onPlaybackSync, onPremiumGranted }: UseDevic
     socket.on('devices:updated', (list: DeviceInfo[]) => setDevices(list));
 
     socket.on('playback:sync', (event: PlaybackSyncEvent) => {
-      // Convert server future timestamp to local performance.now() time
       const localPlayAt = serverToLocalPerf(event.playAt);
       onPlaybackSync?.(event, localPlayAt);
     });
 
-    socket.on('playback:transfer', ({ targetDeviceId, session, playAt }: any) => {
+    socket.on('playback:transfer', ({ session, playAt }: any) => {
       const localPlayAt = serverToLocalPerf(playAt);
       if (session) onPlaybackSync?.({ action: 'play', songUrl: session.songUrl, positionMs: session.positionMs, playAt, serverTime: Date.now() }, localPlayAt);
     });

@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+import { API_URL } from '../config';
+
 
 interface LrcLine {
   time: number; // seconds
@@ -38,7 +40,7 @@ export function LyricsPanel({ songId, currentTime, token }: Props) {
     setLines([]); setPlainLyrics(null); setActiveIdx(-1);
     setLoading(true);
 
-    fetch(`http://localhost:3000/songs/${songId}/lyrics`, {
+    fetch(`${API_URL}/songs/${songId}/lyrics`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.ok ? r.json() : null)

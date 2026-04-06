@@ -7,7 +7,7 @@
     "build": "nest build",
     "start": "nest start",
     "start:dev": "node --max-old-space-size=4096 node_modules/@nestjs/cli/bin/nest.js start --watch",
-    "start:prod": "node dist/main",
+    "start:prod": "node dist/src/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
     "test": "node --max-old-space-size=4096 node_modules/jest/bin/jest.js",
     "test:watch": "node --max-old-space-size=4096 node_modules/jest/bin/jest.js --watch",

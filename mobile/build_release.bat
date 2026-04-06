@@ -4,30 +4,24 @@ echo  OursMusic - Build Release APK
 echo ============================================
 echo.
 
-set SRC=C:\Users\ytalo\OneDrive\Área de Trabalho\Carai\music-app\mobile
-set DST=C:\projetos\music-app\mobile
+REM Detecta o caminho do projeto automaticamente
+set SRC=%~dp0
+set SRC=%SRC:~0,-1%
 
-echo [1/4] Copiando lib...
-xcopy /E /Y /Q "%SRC%\lib" "%DST%\lib\"
-if errorlevel 1 ( echo ERRO ao copiar lib && pause && exit /b 1 )
+REM Pasta de destino do build (pode ser a mesma)
+set DST=%SRC%
 
-echo [2/4] Copiando android...
-xcopy /Y /Q "%SRC%\android\app\build.gradle.kts" "%DST%\android\app\"
-xcopy /Y /Q "%SRC%\android\app\src\main\AndroidManifest.xml" "%DST%\android\app\src\main\"
-xcopy /E /Y /Q "%SRC%\android\app\src\main\kotlin" "%DST%\android\app\src\main\kotlin\"
-
-echo [3/4] Copiando pubspec.yaml...
-xcopy /Y /Q "%SRC%\pubspec.yaml" "%DST%\"
-
-echo [4/4] Buildando APK...
+echo [1/3] Instalando dependencias...
 cd /d "%DST%"
 call flutter pub get
 if errorlevel 1 ( echo ERRO no flutter pub get && pause && exit /b 1 )
 
+echo [2/3] Buildando APK release...
 call flutter build apk --release ^
-  --dart-define=APP_VERSION=1.0.2 ^
-  --dart-define=API_URL=http://192.168.15.3:3000 ^
-  --dart-define=DEVICE_TYPE=mobile
+  --dart-define=APP_VERSION=1.0.5 ^
+  --dart-define=API_URL=https://oursmusics.shop/api ^
+  --dart-define=DEVICE_TYPE=mobile ^
+  --target-platform android-arm,android-arm64
 
 if errorlevel 1 (
   echo.
@@ -36,9 +30,20 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo [3/3] Copiando APK para apk-releases...
+set APK_OUT=%DST%\build\app\outputs\flutter-apk\app-release.apk
+set APK_DST=%SRC%\..\backend\apk-releases\app-mobile.apk
+
+if exist "%APK_OUT%" (
+  copy /Y "%APK_OUT%" "%APK_DST%"
+  echo APK copiado para: %APK_DST%
+) else (
+  echo AVISO: APK nao encontrado em %APK_OUT%
+)
+
 echo.
 echo ============================================
-echo  BUILD OK!
-echo  APK: %DST%\build\app\outputs\flutter-apk\OursMusic_release.apk
+echo  BUILD OK! Versao 1.0.5
+echo  API: https://oursmusics.shop/api
 echo ============================================
 pause
