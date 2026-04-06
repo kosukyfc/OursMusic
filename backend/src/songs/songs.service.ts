@@ -28,8 +28,7 @@ export class SongsService {
     });
   }
 
-  async homeData(userId: string) {
-    // 6 carousels by genre, 6 songs each, no repeats across carousels
+  async homeData(_userId: string) {
     const allSongs = await this.prisma.song.findMany({
       where: { available: true },
       orderBy: { playCount: 'desc' },
@@ -39,60 +38,113 @@ export class SongsService {
       },
     });
 
-    // Group by genre
+    const usedIds = new Set<string>();
+    const carousels: { genre: string; songs: typeof allSongs }[] = [];
+
+    // 1. Group by genre (real genres first)
     const genreMap = new Map<string, typeof allSongs>();
     for (const s of allSongs) {
-      const g = s.genre?.trim() || 'Outros';
+      const g = s.genre?.trim();
+      if (!g) continue;
       if (!genreMap.has(g)) genreMap.set(g, []);
       genreMap.get(g)!.push(s);
     }
-
-    // Sort genres by total songs desc, pick top 6
     const sortedGenres = [...genreMap.entries()]
       .sort((a, b) => b[1].length - a[1].length)
       .slice(0, 6);
 
-    const usedIds = new Set<string>();
-    const carousels = sortedGenres.map(([genre, songs]) => {
+    for (const [genre, songs] of sortedGenres) {
       const fresh = songs.filter(s => !usedIds.has(s.id)).slice(0, 6);
+      if (fresh.length === 0) continue;
       fresh.forEach(s => usedIds.add(s.id));
-      return { genre, songs: fresh };
-    }).filter(c => c.songs.length > 0);
+      carousels.push({ genre, songs: fresh });
+    }
 
-    // Top 6 albums by total play count
+    // 2. Fallback: if fewer than 6 carousels, fill with albums
+    if (carousels.length < 6) {
+      const albumMap = new Map<string, typeof allSongs>();
+      for (const s of allSongs) {
+        if (usedIds.has(s.id)) continue;
+        const key = s.albumName?.trim();
+        if (!key) continue;
+        if (!albumMap.has(key)) albumMap.set(key, []);
+        albumMap.get(key)!.push(s);
+      }
+      const sortedAlbums = [...albumMap.entries()]
+        .sort((a, b) => b[1].length - a[1].length);
+      for (const [album, songs] of sortedAlbums) {
+        if (carousels.length >= 6) break;
+        const fresh = songs.filter(s => !usedIds.has(s.id)).slice(0, 6);
+        if (fresh.length < 2) continue;
+        fresh.forEach(s => usedIds.add(s.id));
+        carousels.push({ genre: album, songs: fresh });
+      }
+    }
+
+    // 3. Fallback: fill remaining with artists
+    if (carousels.length < 6) {
+      const artistMap = new Map<string, typeof allSongs>();
+      for (const s of allSongs) {
+        if (usedIds.has(s.id)) continue;
+        const key = s.artist?.trim();
+        if (!key) continue;
+        if (!artistMap.has(key)) artistMap.set(key, []);
+        artistMap.get(key)!.push(s);
+      }
+      const sortedArtists = [...artistMap.entries()]
+        .sort((a, b) => b[1].length - a[1].length);
+      for (const [artist, songs] of sortedArtists) {
+        if (carousels.length >= 6) break;
+        const fresh = songs.filter(s => !usedIds.has(s.id)).slice(0, 6);
+        if (fresh.length < 2) continue;
+        fresh.forEach(s => usedIds.add(s.id));
+        carousels.push({ genre: artist, songs: fresh });
+      }
+    }
+
+    // 4. Last resort: if still empty, just show all songs in one carousel
+    if (carousels.length === 0 && allSongs.length > 0) {
+      carousels.push({ genre: 'Músicas', songs: allSongs.slice(0, 6) });
+    }
+
+    // Top albums
     const albumAgg = await this.prisma.song.groupBy({
       by: ['albumName'],
       where: { albumName: { not: null }, available: true },
       _sum: { playCount: true },
       _count: { id: true },
-      orderBy: { _sum: { playCount: 'desc' } },
-      take: 6,
+      take: 20,
     });
     const topAlbums = albumAgg
       .filter(a => a.albumName)
+      .sort((a, b) => (b._sum.playCount ?? 0) - (a._sum.playCount ?? 0))
+      .slice(0, 6)
       .map(a => {
         const cover = allSongs.find(s => s.albumName === a.albumName)?.coverUrl ?? null;
         return { name: a.albumName!, coverUrl: cover, playCount: a._sum.playCount ?? 0, songCount: a._count.id };
       });
 
-    // Top 6 playlists (most songs, public)
+    // Top playlists
     const topPlaylists = await this.prisma.playlist.findMany({
       where: { isPublic: true },
       include: { songs: { include: { song: { select: { coverUrl: true } } }, take: 1 } },
-      orderBy: { songs: { _count: 'desc' } },
-      take: 6,
+      take: 20,
     });
+    const sortedPlaylists = topPlaylists
+      .sort((a, b) => b.songs.length - a.songs.length)
+      .slice(0, 6);
 
-    // Top 6 artists by play count
+    // Top artists
     const artistAgg = await this.prisma.song.groupBy({
       by: ['artist'],
       where: { artist: { not: null }, available: true },
       _sum: { playCount: true },
-      orderBy: { _sum: { playCount: 'desc' } },
-      take: 6,
+      take: 20,
     });
     const topArtists = artistAgg
       .filter(a => a.artist)
+      .sort((a, b) => (b._sum.playCount ?? 0) - (a._sum.playCount ?? 0))
+      .slice(0, 6)
       .map(a => {
         const cover = allSongs.find(s => s.artist === a.artist)?.coverUrl ?? null;
         return { name: a.artist!, coverUrl: cover, playCount: a._sum.playCount ?? 0 };
@@ -101,7 +153,7 @@ export class SongsService {
     return {
       carousels,
       topAlbums,
-      topPlaylists: topPlaylists.map(p => ({
+      topPlaylists: sortedPlaylists.map(p => ({
         id: p.id,
         title: p.title,
         coverUrl: p.songs[0]?.song?.coverUrl ?? null,
