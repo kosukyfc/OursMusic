@@ -1,0 +1,33 @@
+# Backend
+backend/.env
+backend/.env.local
+backend/node_modules/
+backend/dist/
+backend/*.log
+
+# Mobile build output
+mobile/build/
+mobile/.dart_tool/
+mobile/.flutter-plugins-dependencies
+mobile/.pub-cache/
+mobile/.pub/
+mobile/android/app/debug
+mobile/android/app/profile
+mobile/android/app/release
+mobile/**/*.class
+mobile/**/*.log
+
+# Web
+web/node_modules/
+web/dist/
+web/.next/
+web/build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.iml

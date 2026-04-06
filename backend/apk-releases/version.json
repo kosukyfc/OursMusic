@@ -1,0 +1,7 @@
+{
+  "version": "1.0.5",
+  "mobileUrl": "https://oursmusics.shop/api/app/download/mobile",
+  "tvUrl": "https://oursmusics.shop/api/app/download/tv",
+  "notes": "Versão 1.0.5 — Carrosséis por álbum, player persistente, melhorias de performance",
+  "releasedAt": "2026-04-06T00:00:00.000Z"
+}
