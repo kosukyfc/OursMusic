@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../api.dart';
 import '../theme.dart';
 import '../widgets/mini_player.dart';
@@ -344,11 +345,13 @@ class _TabletPlayerBar extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: song.coverUrl != null
-                ? Image.network(song.coverUrl!,
+                ? CachedNetworkImage(
+                    imageUrl: song.coverUrl!,
                     width: 48,
                     height: 48,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => _placeholder())
+                    errorWidget: (_, __, ___) => _placeholder(),
+                  )
                 : _placeholder(),
           ),
           const SizedBox(width: 12),
@@ -622,11 +625,14 @@ class _QuickTile extends StatelessWidget {
             borderRadius:
                 const BorderRadius.horizontal(left: Radius.circular(4)),
             child: song.coverUrl != null
-                ? Image.network(song.coverUrl!,
+                ? CachedNetworkImage(
+                    imageUrl: song.coverUrl!,
                     width: 52,
                     height: 52,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => _placeholder())
+                    errorWidget: (_, __, ___) => _placeholder(),
+                    placeholder: (_, __) => _placeholder(),
+                  )
                 : _placeholder(),
           ),
           const SizedBox(width: 10),
@@ -707,11 +713,14 @@ class _AlbumCard extends StatelessWidget {
             ClipRRect(
               borderRadius: BorderRadius.circular(6),
               child: song.coverUrl != null
-                  ? Image.network(song.coverUrl!,
+                  ? CachedNetworkImage(
+                      imageUrl: song.coverUrl!,
                       width: size,
                       height: size,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _placeholder())
+                      errorWidget: (_, __, ___) => _placeholder(),
+                      placeholder: (_, __) => _placeholder(),
+                    )
                   : _placeholder(),
             ),
             // Download button overlay

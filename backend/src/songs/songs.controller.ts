@@ -39,6 +39,11 @@ export class SongsController {
     return this.songsService.list(uploadedBy);
   }
 
+  @Get('home')
+  home(@Req() req: Request & { user: { userId: string } }) {
+    return this.songsService.homeData(req.user.userId);
+  }
+
   @Get(':id/lyrics')
   lyrics(@Param('id') id: string) {
     return this.songsService.getLyrics(id);
