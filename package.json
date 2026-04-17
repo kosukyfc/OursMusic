@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "keep-alive": "node keep-alive.js"
+  },
   "dependencies": {
     "axios": "^1.15.0"
   }
