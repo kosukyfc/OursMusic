@@ -4,7 +4,6 @@ services:
     runtime: node
     plan: free
     buildCommand: npm install --legacy-peer-deps && npm run build
-    postBuildCommand: npx prisma migrate deploy
     startCommand: npm run start:prod
     envVars:
       - key: NODE_ENV
