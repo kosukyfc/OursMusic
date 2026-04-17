@@ -17,6 +17,15 @@ async function bootstrap() {
     logger: ["log", "error", "warn"],
   });
 
+  // ── Ping endpoint (sem dependências - apenas para verificar se app está online) ──
+  app.use((req: any, res: any, next: any) => {
+    if (req.path === '/ping') {
+      res.json({ status: 'pong', timestamp: new Date().toISOString() });
+      return;
+    }
+    next();
+  });
+
   const configService = app.get(ConfigService);
   const frontendOrigin = configService.get("FRONTEND_URL", "http://localhost:5173");
   const isProd = configService.get("NODE_ENV") === "production";
