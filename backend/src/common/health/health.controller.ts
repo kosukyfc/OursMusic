@@ -16,6 +16,21 @@ export class HealthController {
     private prismaService: PrismaService,
   ) {}
 
+  @Get('live')
+  liveness() {
+    return { status: 'ok' };
+  }
+
+  @Get('ready')
+  @HealthCheck()
+  async readiness() {
+    return this.health.check([
+      () => this.db.pingCheck('database', this.prismaService),
+      () => this.memory.checkHeap('memory_heap', 300 * 1024 * 1024), // 300MB
+      () => this.memory.checkRSS('memory_rss', 300 * 1024 * 1024), // 300MB
+    ]);
+  }
+
   @Get()
   @HealthCheck()
   async check() {
