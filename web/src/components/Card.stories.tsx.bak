@@ -1,0 +1,46 @@
+import React from 'react';
+import { Meta, StoryObj } from '@storybook/react';
+import { Card } from './Card';
+
+const meta = {
+  title: 'Components/Card',
+  component: Card,
+  parameters: {
+    layout: 'centered',
+  },
+  tags: ['autodocs'],
+} satisfies Meta<typeof Card>;
+
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const Default: Story = {
+  args: {
+    children: 'This is a card component',
+  },
+};
+
+export const WithTitle: Story = {
+  args: {
+    title: 'Card Title',
+    children: 'This card has a title and content',
+  },
+};
+
+export const WithButton: Story = {
+  args: {
+    title: 'Click Me',
+    children: 'I can respond to clicks',
+    onClick: () => alert('Card clicked!'),
+  },
+};
+
+export const Multiple: Story = {
+  render: () => (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
+      <Card title="Card 1">Placeholder content</Card>
+      <Card title="Card 2">Placeholder content</Card>
+      <Card title="Card 3">Placeholder content</Card>
+    </div>
+  ),
+};

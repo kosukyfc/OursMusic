@@ -1,18 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
 
-import { API_URL as API } from '../config';
+import { API_URL as API, EXTRA_HEADERS } from '../config';
 
-export interface Playlist {
-  id: string;
+export interface Playlist {  id: string;
   title: string;
+  coverUrl?: string;
   isPublic: boolean;
   songs: { song: { id: string; title: string; artist?: string; coverUrl?: string; duration: number } }[];
 }
 
 async function apiFetch(path: string, token: string, opts: RequestInit = {}) {
+  const tok = (token && token !== 'authenticated') ? token : (sessionStorage.getItem('_om_access') ?? token);
   const res = await fetch(`${API}${path}`, {
     ...opts,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(opts.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}`, ...EXTRA_HEADERS, ...(opts.headers ?? {}) },
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? res.statusText);
   return res.json();
@@ -34,11 +35,11 @@ export function usePlaylists(token: string) {
 
   useEffect(() => { load(); }, [load]);
 
-  const create = useCallback(async (title: string): Promise<Playlist | null> => {
+  const create = useCallback(async (title: string, coverUrl?: string): Promise<Playlist | null> => {
     try {
       const data = await apiFetch('/playlists', token, {
         method: 'POST',
-        body: JSON.stringify({ title, isPublic: false }),
+        body: JSON.stringify({ title, coverUrl, isPublic: false }),
       });
       setPlaylists(p => [data, ...p]);
       return data;
@@ -54,12 +55,17 @@ export function usePlaylists(token: string) {
 
   const addSong = useCallback(async (playlistId: string, songId: string) => {
     try {
-      await apiFetch(`/playlists/${playlistId}/songs`, token, {
+      const result = await apiFetch(`/playlists/${playlistId}/songs`, token, {
         method: 'POST',
         body: JSON.stringify({ songId }),
       });
       await load();
-    } catch (e: any) { alert(e.message); }
+      return result;
+    } catch (e: any) { 
+      const msg = e.message || 'Erro ao adicionar música à playlist';
+      alert(msg);
+      throw e;
+    }
   }, [token, load]);
 
   const removeSong = useCallback(async (playlistId: string, songId: string) => {

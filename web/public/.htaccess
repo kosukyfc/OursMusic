@@ -1,0 +1,61 @@
+# OursMusic — .htaccess com segurança completa
+Options -Indexes -ExecCGI -Includes -MultiViews
+
+# ── Modo de manutenção ───────────────────────────────────────────────────────
+RewriteEngine On
+RewriteCond %{DOCUMENT_ROOT}/maintenance.flag -f
+RewriteCond %{REQUEST_URI} !^/maintenance\.html
+RewriteCond %{REQUEST_URI} !^/admin/
+RewriteRule ^ /maintenance.html [R=302,L]
+
+# ── SPA routing ───────────────────────────────────────────────────────────────
+RewriteBase /
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_URI}      !^/api/
+RewriteRule ^ index.html [L]
+
+# ── Bloquear arquivos sensíveis ───────────────────────────────────────────────
+<FilesMatch "(\.env|\.git|\.htpasswd|\.DS_Store|Thumbs\.db|\.log|\.sql|\.bak|\.backup|\.old|\.orig|\.sh|\.ini)$">
+    Require all denied
+</FilesMatch>
+
+# ── Bloquear path traversal e null bytes ──────────────────────────────────────
+RewriteCond %{REQUEST_URI} \.\./  [NC,OR]
+RewriteCond %{REQUEST_URI} \%00   [NC]
+RewriteRule .* - [F,L]
+
+# ── Bloquear User-Agents maliciosos ───────────────────────────────────────────
+RewriteCond %{HTTP_USER_AGENT} (libwww-perl|wget|python|nikto|sqlmap|nmap|masscan|zgrab) [NC]
+RewriteRule .* - [F,L]
+
+# ── Forçar HTTPS ──────────────────────────────────────────────────────────────
+RewriteCond %{HTTPS} off
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+# ── Headers de segurança ──────────────────────────────────────────────────────
+<IfModule mod_headers.c>
+    Header always set X-Frame-Options "DENY"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+    Header unset X-Powered-By
+    Header unset Server
+</IfModule>
+
+# ── Cache de assets com hash (Vite gera nomes com hash) ──────────────────────
+<IfModule mod_expires.c>
+    ExpiresActive On
+    <FilesMatch "\.[0-9a-f]{8}\.(js|css|woff2?)$">
+        ExpiresDefault "access plus 1 year"
+        Header append Cache-Control "immutable"
+    </FilesMatch>
+    ExpiresByType text/html             "access plus 0 seconds"
+    ExpiresByType application/manifest+json "access plus 0 seconds"
+</IfModule>
+
+# ── Compressão ────────────────────────────────────────────────────────────────
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json
+    AddOutputFilterByType DEFLATE image/svg+xml application/manifest+json font/woff2
+</IfModule>

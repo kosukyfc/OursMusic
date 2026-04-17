@@ -7,6 +7,7 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { GoogleStrategy } from './strategies/google.strategy';
 import { GoogleTokenService } from './google-token.service';
+import { MailService } from './mail.service';
 
 @Module({
   imports: [
@@ -22,7 +23,7 @@ import { GoogleTokenService } from './google-token.service';
       }),
     }),
   ],
-  providers: [AuthService, JwtStrategy, GoogleStrategy, GoogleTokenService],
+  providers: [AuthService, JwtStrategy, GoogleStrategy, GoogleTokenService, MailService],
   controllers: [AuthController],
   exports: [AuthService, JwtModule, GoogleTokenService],
 })

@@ -3,12 +3,16 @@ import '../api.dart';
 import '../theme.dart';
 import '../widgets/avatar_edit_sheet.dart';
 import '../widgets/premium_avatar.dart';
+import '../widgets/waveform_widget.dart';
+import '../player/player_controller.dart';
 import '../services/theme_service.dart';
 import '../services/update_service.dart';
+import 'admin_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   final VoidCallback onLogout;
-  const ProfileScreen({super.key, required this.onLogout});
+  final PlayerController? player;
+  const ProfileScreen({super.key, required this.onLogout, this.player});
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
@@ -72,14 +76,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   onPressed: () => Navigator.pop(context),
                 ),
                 flexibleSpace: FlexibleSpaceBar(
-                  background: Container(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [kAccent.withValues(alpha: 0.25), kBgBase],
+                  background: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [kAccent.withValues(alpha: 0.25), kBgBase],
+                          ),
+                        ),
                       ),
-                    ),
+                      // Waveform sincronizado com o player
+                      if (widget.player != null)
+                        Positioned(
+                          left: 0, right: 0, bottom: 0,
+                          child: WaveformWidget(
+                            player: widget.player!,
+                            height: 56,
+                            color: kAccent,
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),
@@ -275,11 +294,26 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       _MenuItem(
                           icon: Icons.system_update_outlined,
                           label: 'Atualizar',
-                          onTap: () => _showUpdateSheet()),
+                          onTap: () => UpdateService.checkForUpdate(context)),
 
                       const SizedBox(height: 8),
                       const Divider(color: Color(0xFF2A2A2A)),
                       const SizedBox(height: 8),
+
+                      // ── Admin (só para admins) ────────────────────────────────
+                      if (_profile?['isAdmin'] == true) ...[
+                        const _SectionTitle('Administração'),
+                        _MenuItem(
+                          icon: Icons.shield,
+                          label: 'Painel Admin',
+                          subtitle: 'Gerenciar usuários, músicas e atividades',
+                          color: const Color(0xFFF59E0B),
+                          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminScreen())),
+                        ),
+                        const SizedBox(height: 8),
+                        const Divider(color: Color(0xFF2A2A2A)),
+                        const SizedBox(height: 8),
+                      ],
 
                       // ── Sair ─────────────────────────────────────────────────
                       _MenuItem(
@@ -545,16 +579,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
       builder: (_) => _ReportSheet(),
-    );
-  }
-
-  void _showUpdateSheet() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF282828),
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      builder: (_) => _UpdateSheet(),
     );
   }
 
@@ -1189,243 +1213,6 @@ class _AboutSheet extends StatelessWidget {
         const SizedBox(height: 8),
         const Text('Desenvolvido com Flutter & NestJS',
             style: TextStyle(color: kTextMuted, fontSize: 11)),
-        const SizedBox(height: 8),
-      ]),
-    ));
-  }
-}
-
-// ── Update sheet ──────────────────────────────────────────────────────────────
-const _kAppVersion =
-    String.fromEnvironment('APP_VERSION', defaultValue: '1.0.0');
-
-class _UpdateSheet extends StatefulWidget {
-  @override
-  State<_UpdateSheet> createState() => _UpdateSheetState();
-}
-
-class _UpdateSheetState extends State<_UpdateSheet> {
-  bool _checking = false;
-  String? _serverVersion;
-  String? _notes;
-  String? _downloadUrl;
-  String? _error;
-  bool _showNotes = false;
-
-  @override
-  void initState() {
-    super.initState();
-    // Load notes automatically on open
-    _checkUpdate();
-  }
-
-  Future<void> _checkUpdate() async {
-    setState(() {
-      _checking = true;
-      _error = null;
-      _serverVersion = null;
-    });
-    try {
-      final res = await Api.get('/app/version');
-      if (res is Map<String, dynamic>) {
-        setState(() {
-          _serverVersion = res['version']?.toString() ?? '1.0.0';
-          _notes = res['notes']?.toString() ?? '';
-          _downloadUrl = res['mobileUrl']?.toString();
-          _checking = false;
-        });
-      } else {
-        setState(() {
-          _error = 'Resposta inválida do servidor.';
-          _checking = false;
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _error = 'Não foi possível verificar. Verifique sua conexão.';
-        _checking = false;
-      });
-    }
-  }
-
-  bool get _hasUpdate {
-    if (_serverVersion == null) return false;
-    final s = _serverVersion!.split('.').map(int.tryParse).toList();
-    final c = _kAppVersion.split('.').map(int.tryParse).toList();
-    for (int i = 0; i < 3; i++) {
-      final sv = i < s.length ? (s[i] ?? 0) : 0;
-      final cv = i < c.length ? (c[i] ?? 0) : 0;
-      if (sv > cv) return true;
-      if (sv < cv) return false;
-    }
-    return false;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-        child: Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        _SheetHandle(),
-        const SizedBox(height: 16),
-
-        Row(children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration:
-                const BoxDecoration(color: kAccent, shape: BoxShape.circle),
-            child:
-                const Icon(Icons.system_update, color: Colors.black, size: 22),
-          ),
-          const SizedBox(width: 12),
-          const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Atualizar OursMusic',
-                style: TextStyle(
-                    color: kTextPrimary,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800)),
-            Text('Versao instalada: $_kAppVersion',
-                style: TextStyle(color: kTextSecond, fontSize: 12)),
-          ]),
-        ]),
-
-        const SizedBox(height: 20),
-
-        // Buttons row
-        Row(children: [
-          Expanded(
-            child: ElevatedButton.icon(
-              onPressed: _checking ? null : _checkUpdate,
-              icon: _checking
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                          color: Colors.black, strokeWidth: 2))
-                  : const Icon(Icons.refresh, size: 18),
-              label:
-                  Text(_checking ? 'Verificando...' : 'Verificar atualização'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: kAccent,
-                foregroundColor: Colors.black,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8)),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: OutlinedButton.icon(
-              onPressed: () => setState(() => _showNotes = !_showNotes),
-              icon: Icon(
-                  _showNotes ? Icons.expand_less : Icons.article_outlined,
-                  size: 18),
-              label: const Text('Notas'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: kTextPrimary,
-                side: const BorderSide(color: Color(0xFF3A3A3A)),
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8)),
-              ),
-            ),
-          ),
-        ]),
-
-        // Result
-        if (_error != null) ...[
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-                color: const Color(0xFF2A0808),
-                borderRadius: BorderRadius.circular(8)),
-            child: Row(children: [
-              const Icon(Icons.error_outline,
-                  color: Color(0xFFF15E6C), size: 18),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: Text(_error!,
-                      style: const TextStyle(
-                          color: Color(0xFFF15E6C), fontSize: 13))),
-            ]),
-          ),
-        ],
-
-        if (_serverVersion != null && !_checking) ...[
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: _hasUpdate
-                  ? kAccent.withValues(alpha: 0.1)
-                  : const Color(0xFF1A2A1A),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                  color: _hasUpdate
-                      ? kAccent.withValues(alpha: 0.4)
-                      : const Color(0xFF2A3A2A)),
-            ),
-            child: Row(children: [
-              Icon(_hasUpdate ? Icons.system_update : Icons.check_circle,
-                  color: _hasUpdate ? kAccent : const Color(0xFF4CAF50),
-                  size: 20),
-              const SizedBox(width: 10),
-              Expanded(
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                    Text(
-                      _hasUpdate
-                          ? 'Atualização disponível: $_serverVersion'
-                          : 'Você está na versão mais recente!',
-                      style: TextStyle(
-                          color: _hasUpdate ? kAccent : kTextPrimary,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700),
-                    ),
-                    if (_hasUpdate)
-                      const Text('Versao atual: $_kAppVersion',
-                          style: TextStyle(color: kTextSecond, fontSize: 11)),
-                  ])),
-              if (_hasUpdate && _downloadUrl != null)
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    UpdateService.checkForUpdate(context);
-                  },
-                  child: const Text('Baixar',
-                      style: TextStyle(
-                          color: kAccent, fontWeight: FontWeight.w800)),
-                ),
-            ]),
-          ),
-        ],
-
-        // Notes panel
-        if (_showNotes) ...[
-          const SizedBox(height: 12),
-          Container(
-            constraints: const BoxConstraints(maxHeight: 200),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-                color: const Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.circular(8)),
-            child: SingleChildScrollView(
-              child: Text(
-                _notes?.isNotEmpty == true
-                    ? _notes!.replaceAll('\\n', '\n')
-                    : 'Carregue as notas verificando a atualização.',
-                style: const TextStyle(
-                    color: kTextSecond, fontSize: 12, height: 1.6),
-              ),
-            ),
-          ),
-        ],
-
         const SizedBox(height: 8),
       ]),
     ));

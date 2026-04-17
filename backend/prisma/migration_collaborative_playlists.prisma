@@ -1,0 +1,69 @@
+/**
+ * Prisma Schema Migrations
+ * For Collaborative Playlists Feature
+ */
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model PlaylistCollaboration {
+  id           String @id @default(cuid())
+  playlistId   String
+  userId       String
+  invitedBy    String
+  status       String @default("pending") // pending | accepted | rejected | revoked
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  playlist     Playlist @relation("PlaylistCollaborators", fields: [playlistId], references: [id], onDelete: Cascade)
+  user         User @relation("PlaylistCollaborations", fields: [userId], references: [id], onDelete: Cascade)
+  inviter      User @relation("PlaylistCollaborationInvites", fields: [invitedBy], references: [id], onDelete: Cascade)
+  
+  @@unique([playlistId, userId])
+  @@index([playlistId])
+  @@index([userId])
+  @@index([status])
+}
+
+model PlaylistChangeLog {
+  id           String @id @default(cuid())
+  playlistId   String
+  userId       String
+  action       String
+  payload      Json
+  
+  createdAt    DateTime @default(now())
+  
+  playlist     Playlist @relation("PlaylistChanges", fields: [playlistId], references: [id], onDelete: Cascade)
+  user         User @relation("PlaylistChanges", fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([playlistId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Update existing Playlist model to include relationships
+model Playlist {
+  // ... existing fields
+  
+  // New relationships for collaborative playlists
+  collaborators    PlaylistCollaboration[] @relation("PlaylistCollaborators")
+  changeLogs       PlaylistChangeLog[] @relation("PlaylistChanges")
+}
+
+// Update existing User model
+model User {
+  // ... existing fields
+  
+  // New relationships for collaborative playlists
+  playlistCollaborations PlaylistCollaboration[] @relation("PlaylistCollaborations")
+  playlistInvites PlaylistCollaboration[] @relation("PlaylistCollaborationInvites")
+  playlistChanges PlaylistChangeLog[] @relation("PlaylistChanges")
+}

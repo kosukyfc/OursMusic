@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 
-import { API_URL as API } from '../config';
+import { API_URL as API, EXTRA_HEADERS } from '../config';
 
 async function apiFetch(path: string, token: string, opts: RequestInit = {}) {
+  const tok = (token && token !== 'authenticated') ? token : (sessionStorage.getItem('_om_access') ?? token);
   const res = await fetch(`${API}${path}`, {
     ...opts,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(opts.headers ?? {}) },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}`, ...EXTRA_HEADERS, ...(opts.headers ?? {}) },
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message ?? res.statusText);
   if (res.status === 204) return null;

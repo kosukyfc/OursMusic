@@ -1,0 +1,25 @@
+// Setup file for vitest
+import { expect, afterEach } from 'vitest';
+import { cleanup } from '@testing-library/react';
+
+// Cleanup after each test
+afterEach(() => {
+  cleanup();
+});
+
+// Mock fetch
+global.fetch = async () => {
+  throw new Error('fetch should be mocked');
+};
+
+// Mock localStorage
+const localStorageMock = {
+  getItem: () => 'mock-token',
+  setItem: () => {},
+  removeItem: () => {},
+  clear: () => {},
+};
+
+Object.defineProperty(window, 'localStorage', {
+  value: localStorageMock,
+});

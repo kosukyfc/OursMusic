@@ -1,0 +1,62 @@
+import { Button } from './Button';
+import { Meta, StoryObj } from '@storybook/react';
+
+const meta = {
+  title: 'Components/Button',
+  component: Button,
+  parameters: {
+    layout: 'centered',
+  },
+  tags: ['autodocs'],
+  argTypes: {
+    variant: {
+      options: ['primary', 'secondary', 'danger'],
+      control: { type: 'radio' },
+    },
+    size: {
+      options: ['sm', 'md', 'lg'],
+      control: { type: 'radio' },
+    },
+  },
+} satisfies Meta<typeof Button>;
+
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const Primary: Story = {
+  args: {
+    variant: 'primary',
+    children: 'Browse Playlists',
+  },
+};
+
+export const Secondary: Story = {
+  args: {
+    variant: 'secondary',
+    children: 'Cancel',
+  },
+};
+
+export const Danger: Story = {
+  args: {
+    variant: 'danger',
+    children: 'Delete',
+  },
+};
+
+export const Sizes: Story = {
+  render: () => (
+    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+      <Button size="sm">Small</Button>
+      <Button size="md">Medium</Button>
+      <Button size="lg">Large</Button>
+    </div>
+  ),
+};
+
+export const Loading: Story = {
+  args: {
+    children: 'Uploading...',
+    disabled: true,
+  },
+};

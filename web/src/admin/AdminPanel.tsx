@@ -1,556 +1,1108 @@
-﻿import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
+import { API_URL, EXTRA_HEADERS } from '../config';
+import './admin.css';
+import { OursMusicLogo } from '../components/OursMusicLogo';
+import { DeployPanel } from './DeployPanel';
 
-import { API_URL as API } from '../config';
+interface AdminPanelProps { token: string; userEmail: string; onExit: () => void; onLogout: () => void; }
+type AdminPage = 'dashboard' | 'songs' | 'users' | 'import' | 'activity' | 'update' | 'settings';
 
-async function api(path: string, token: string, opts: RequestInit = {}) {
-  const res = await fetch(`${API}${path}`, {
+function apiFetch(path: string, token: string, opts: RequestInit = {}) {
+  const tok = (token && token !== 'authenticated') ? token : (sessionStorage.getItem('_om_access') ?? token);
+  return fetch(`${API_URL}${path}`, {
     ...opts,
+    credentials: 'include',
     headers: {
-      Authorization: `Bearer ${token}`,
-      ...(opts.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+      Authorization: `Bearer ${tok}`,
+      'Content-Type': 'application/json',
+      'X-Admin-Token': import.meta.env.VITE_ADMIN_SECRET ?? '',
+      ...EXTRA_HEADERS,
       ...(opts.headers ?? {}),
     },
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.message ?? res.statusText);
+  }).then(r => r.json());
+}
+
+// ── Badge definitions ─────────────────────────────────────────────────────────
+const ALL_BADGES = [
+  { id: 'premium',  label: 'Premium',    emoji: '💎',  color: '#fbbf24' },
+  { id: 'admin',    label: 'Admin',      emoji: '🛡️',  color: '#f59e0b' },
+  { id: 'founder',  label: 'Fundador',   emoji: '👑',  color: '#a78bfa' },
+  { id: 'dj',       label: 'DJ',         emoji: '🎧',  color: '#00D4FF' },
+  { id: 'curator',  label: 'Curador',    emoji: '🎵',  color: '#00FF88' },
+  { id: 'beta',     label: 'Beta',       emoji: '⚡',  color: '#f97316' },
+  { id: 'verified', label: 'Verificado', emoji: '✅',  color: '#34d399' },
+];
+
+// ── Realistic Lightning Canvas ────────────────────────────────────────────────
+
+/** Midpoint displacement: recursively splits a segment, offsetting the midpoint
+ *  perpendicularly by a random amount that shrinks with depth. */
+function buildBolt(
+  x1: number, y1: number, x2: number, y2: number,
+  roughness: number, depth: number, pts: [number, number][]
+) {
+  if (depth === 0) { pts.push([x2, y2]); return; }
+  const mx = (x1 + x2) / 2;
+  const my = (y1 + y2) / 2;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  // perpendicular offset
+  const offset = (Math.random() - 0.5) * len * roughness;
+  const nx = -dy / len;
+  const ny =  dx / len;
+  const ox = mx + nx * offset;
+  const oy = my + ny * offset;
+  buildBolt(x1, y1, ox, oy, roughness * 0.65, depth - 1, pts);
+  buildBolt(ox, oy, x2, y2, roughness * 0.65, depth - 1, pts);
+}
+
+/** Draw one bolt from (x1,y1) to (x2,y2) with optional branches */
+function drawBolt(
+  ctx: CanvasRenderingContext2D,
+  x1: number, y1: number, x2: number, y2: number,
+  color: string, alpha: number, width: number,
+  roughness: number, depth: number, branchProb: number
+) {
+  const pts: [number, number][] = [[x1, y1]];
+  buildBolt(x1, y1, x2, y2, roughness, depth, pts);
+
+  // core bolt
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.stroke();
+
+  // bright white core
+  ctx.globalAlpha = alpha * 0.6;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = width * 0.35;
+  ctx.shadowBlur = 3;
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.stroke();
+  ctx.restore();
+
+  // random branches
+  if (depth > 1) {
+    for (let i = 2; i < pts.length - 2; i++) {
+      if (Math.random() < branchProb) {
+        const [bx, by] = pts[i];
+        const angle = Math.atan2(y2 - y1, x2 - x1) + (Math.random() - 0.5) * 1.2;
+        const blen = Math.sqrt((x2-x1)**2 + (y2-y1)**2) * (0.2 + Math.random() * 0.3);
+        drawBolt(ctx, bx, by, bx + Math.cos(angle) * blen, by + Math.sin(angle) * blen,
+          color, alpha * 0.5, width * 0.5, roughness, depth - 1, 0);
+      }
+    }
   }
-  return res.json();
 }
 
-type AdminView = 'dashboard' | 'songs' | 'upload' | 'import' | 'catalog' | 'users' | 'activity' | 'release' | 'playstats';
+function LightningCanvas({
+  color, count, rayStyle, size,
+}: { color: string; count: number; rayStyle: string; size: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef    = useRef<number>(0);
+  const bolts     = useRef<{ angle: number; nextAt: number; alpha: number; active: boolean; pts: [number,number][] }[]>([]);
+  const plasma    = useRef<{ angle: number; endAngle: number; len: number; born: number }[]>([]);
 
-interface Stats {
-  totalSongs: number; totalUsers: number; totalPlaylists: number;
-  recentActivity: number;
-  planBreakdown: { plan: string; _count: { plan: number } }[];
-}
-interface Song { id: string; title: string; storageType: string; storagePath: string; duration: number; mimeType: string; createdAt: string; }
-interface User { id: string; email: string; name?: string; plan: string; isAdmin: boolean; offlineEnabled: boolean; createdAt: string; _count: { playlists: number; favorites: number; downloads: number }; }
-interface ActivityLog { id: string; action: string; timestamp: string; user: { email: string }; song?: { title: string }; }
+  useLayoutEffect(() => {
+    bolts.current = Array.from({ length: count }, (_, i) => ({
+      angle:  (360 / count) * i,
+      nextAt: performance.now() + Math.random() * 1800,
+      alpha:  0,
+      active: false,
+      pts:    [],
+    }));
+    plasma.current = [];
+  }, [count]);
 
-// â”€â”€ Stat card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function StatCard({ icon, label, value, color }: { icon: string; label: string; value: number; color: string }) {
-  return (
-    <div className="admin-stat-card" style={{ borderTop: `3px solid ${color}` }}>
-      <div className="admin-stat-card__icon">{icon}</div>
-      <div className="admin-stat-card__value">{value.toLocaleString()}</div>
-      <div className="admin-stat-card__label">{label}</div>
-    </div>
-  );
-}
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d')!;
+    const S  = size * 2.6;
+    canvas.width  = S;
+    canvas.height = S;
+    const cx = S / 2;
+    const cy = S / 2;
+    const r  = (size / 2) * 0.92;
 
-// â”€â”€ Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function Dashboard({ token }: { token: string }) {
-  const [stats, setStats] = useState<Stats | null>(null);
-  useEffect(() => { api('/admin/stats', token).then(setStats).catch(() => {}); }, [token]);
-  if (!stats) return <div className="admin-loading">Carregando...</div>;
-  return (
-    <div>
-      <h2 className="admin-section-title">Dashboard</h2>
-      <div className="admin-stats-grid">
-        <StatCard icon="ðŸŽµ" label="MÃºsicas" value={stats.totalSongs} color="#1db954" />
-        <StatCard icon="ðŸ‘¥" label="UsuÃ¡rios" value={stats.totalUsers} color="#3b82f6" />
-        <StatCard icon="ðŸ“‹" label="Playlists" value={stats.totalPlaylists} color="#8b5cf6" />
-        <StatCard icon="ðŸ“Š" label="Atividades" value={stats.recentActivity} color="#f59e0b" />
-      </div>
-      <h3 className="admin-subsection-title">DistribuiÃ§Ã£o de planos</h3>
-      <div className="admin-plan-bars">
-        {stats.planBreakdown.map(p => (
-          <div key={p.plan} className="admin-plan-bar">
-            <span className="admin-plan-bar__label">{p.plan}</span>
-            <div className="admin-plan-bar__track">
-              <div className="admin-plan-bar__fill" style={{
-                width: `${Math.min(100, (p._count.plan / stats.totalUsers) * 100)}%`,
-                background: p.plan === 'premium' ? '#1db954' : p.plan === 'family' ? '#8b5cf6' : '#6b7280',
-              }} />
-            </div>
-            <span className="admin-plan-bar__count">{p._count.plan}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+    // ── storm mode: atmospheric stepped-leader + return stroke ──────────────
+    if (rayStyle === 'storm') {
+      // Each "strike" has phases:
+      //   1. LEADER  – bolt grows segment by segment outward (stepped leader)
+      //   2. RETURN  – full bolt flashes bright white (return stroke)
+      //   3. GLOW    – fades out with afterglow + dart leaders (re-strikes)
+      //   4. IDLE    – wait random interval before next strike
 
-// â”€â”€ Edit Song Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function EditSongModal({ song, token, onClose, onSaved }: {
-  song: Song; token: string; onClose: () => void; onSaved: (s: Song) => void;
-}) {
-  const [form, setForm] = useState({
-    title: song.title,
-    artist: (song as any).artist ?? '',
-    albumName: (song as any).albumName ?? '',
-    coverUrl: (song as any).coverUrl ?? '',
-    duration: song.duration,
-  });
-  const [audioFile, setAudioFile] = useState<File | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [msg, setMsg] = useState('');
-  const fileRef = useRef<HTMLInputElement>(null);
+      type StrikePhase = 'idle' | 'leader' | 'return' | 'glow';
+      interface Strike {
+        angle: number;
+        len: number;
+        pts: [number, number][];
+        branches: [number, number][][];
+        phase: StrikePhase;
+        phaseStart: number;
+        leaderStep: number;   // how many pts revealed so far
+        returnAlpha: number;
+        glowAlpha: number;
+        nextAt: number;
+        dartCount: number;    // re-strikes remaining
+      }
 
-  async function saveMetadata() {
-    setSaving(true); setMsg('');
-    try {
-      const updated = await api(`/admin/songs/${song.id}`, token, {
-        method: 'PUT',
-        body: JSON.stringify(form),
+      /** Build a full stepped-leader path with branches */
+      function buildStrike(sx: number, sy: number, ex: number, ey: number): {
+        pts: [number, number][];
+        branches: [number, number][][];
+      } {
+        const pts: [number, number][] = [[sx, sy]];
+        buildBolt(sx, sy, ex, ey, 0.65, 8, pts);
+
+        // 3-6 branches off random points
+        const branches: [number, number][][] = [];
+        const mainAngle = Math.atan2(ey - sy, ex - sx);
+        const totalLen  = Math.sqrt((ex - sx) ** 2 + (ey - sy) ** 2);
+        const numBranch = 3 + Math.floor(Math.random() * 4);
+        for (let b = 0; b < numBranch; b++) {
+          const pi = 4 + Math.floor(Math.random() * (pts.length - 8));
+          if (pi >= pts.length) continue;
+          const [bx, by] = pts[pi];
+          const bAngle   = mainAngle + (Math.random() - 0.5) * 1.6;
+          const bLen     = totalLen * (0.15 + Math.random() * 0.35);
+          const bPts: [number, number][] = [[bx, by]];
+          buildBolt(bx, by, bx + Math.cos(bAngle) * bLen, by + Math.sin(bAngle) * bLen, 0.7, 6, bPts);
+          branches.push(bPts);
+        }
+        return { pts, branches };
+      }
+
+      const strikes: Strike[] = Array.from({ length: count }, (_, i) => {
+        const angle = (360 / count) * i;
+        const rad   = (angle * Math.PI) / 180;
+        const sx    = cx + Math.cos(rad) * r;
+        const sy2   = cy + Math.sin(rad) * r;
+        const len   = size * (0.5 + Math.random() * 0.6);
+        const ex    = cx + Math.cos(rad) * (r + len);
+        const ey    = cy + Math.sin(rad) * (r + len);
+        const { pts, branches } = buildStrike(sx, sy2, ex, ey);
+        return {
+          angle, len, pts, branches,
+          phase: 'idle', phaseStart: 0,
+          leaderStep: 0, returnAlpha: 0, glowAlpha: 0,
+          nextAt: performance.now() + Math.random() * 2000,
+          dartCount: 0,
+        };
       });
-      onSaved(updated);
-      setMsg('âœ… Metadados salvos.');
-    } catch (e: any) { setMsg(`âŒ ${e.message}`); }
-    finally { setSaving(false); }
-  }
 
-  async function uploadAudio() {
-    if (!audioFile) return;
-    setUploading(true); setMsg('');
-    const fd = new FormData();
-    fd.append('file', audioFile);
-    fd.append('storageType', 's3');
-    try {
-      const updated = await api(`/admin/songs/${song.id}/audio`, token, { method: 'POST', body: fd });
-      onSaved(updated);
-      setMsg('âœ… Arquivo de Ã¡udio vinculado no Supabase!');
-      setAudioFile(null);
-    } catch (e: any) { setMsg(`âŒ ${e.message}`); }
-    finally { setUploading(false); }
-  }
+      function strokePath(pts: [number, number][], upTo: number) {
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        const end = Math.min(upTo, pts.length);
+        for (let i = 1; i < end; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.stroke();
+      }
 
-  const f = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm(prev => ({ ...prev, [k]: k === 'duration' ? Number(e.target.value) : e.target.value }));
+      function stormFrame(now: number) {
+        ctx.clearRect(0, 0, S, S);
 
+        strikes.forEach((s) => {
+          // ── phase transitions ──
+          if (s.phase === 'idle' && now >= s.nextAt) {
+            // rebuild bolt shape for each new strike
+            s.angle  += (Math.random() - 0.5) * (360 / count) * 0.5;
+            const rad2 = (s.angle * Math.PI) / 180;
+            const sx   = cx + Math.cos(rad2) * r;
+            const sy2  = cy + Math.sin(rad2) * r;
+            s.len      = size * (0.45 + Math.random() * 0.65);
+            const ex   = cx + Math.cos(rad2) * (r + s.len);
+            const ey   = cy + Math.sin(rad2) * (r + s.len);
+            const built = buildStrike(sx, sy2, ex, ey);
+            s.pts      = built.pts;
+            s.branches = built.branches;
+            s.phase    = 'leader';
+            s.phaseStart = now;
+            s.leaderStep = 1;
+            s.dartCount  = 1 + Math.floor(Math.random() * 2);
+          }
+
+          if (s.phase === 'leader') {
+            const elapsed = now - s.phaseStart;
+            // advance ~3 segments per 16ms frame → full leader in ~80ms
+            s.leaderStep = Math.min(s.pts.length, Math.floor(elapsed / 14) + 1);
+
+            // dim purple-blue leader channel
+            ctx.save();
+            ctx.globalAlpha = 0.55;
+            ctx.strokeStyle = color;
+            ctx.lineWidth   = 0.8;
+            ctx.lineCap     = 'round';
+            ctx.lineJoin    = 'round';
+            ctx.shadowColor = color;
+            ctx.shadowBlur  = 6;
+            strokePath(s.pts, s.leaderStep);
+
+            // partial branches proportional to leader progress
+            const prog = s.leaderStep / s.pts.length;
+            s.branches.forEach(bp => {
+              if (prog > 0.3) {
+                ctx.globalAlpha = 0.3;
+                ctx.lineWidth   = 0.5;
+                strokePath(bp, Math.floor(bp.length * Math.min(1, (prog - 0.3) / 0.7)));
+              }
+            });
+            ctx.restore();
+
+            if (s.leaderStep >= s.pts.length) {
+              s.phase      = 'return';
+              s.phaseStart = now;
+              s.returnAlpha = 1;
+            }
+          }
+
+          if (s.phase === 'return') {
+            const elapsed = now - s.phaseStart;
+            // return stroke: blazing white flash, lasts ~60ms
+            s.returnAlpha = Math.max(0, 1 - elapsed / 60);
+
+            ctx.save();
+            // wide outer glow
+            ctx.globalAlpha = s.returnAlpha * 0.5;
+            ctx.strokeStyle = color;
+            ctx.lineWidth   = 6;
+            ctx.lineCap     = 'round';
+            ctx.lineJoin    = 'round';
+            ctx.shadowColor = color;
+            ctx.shadowBlur  = 28;
+            strokePath(s.pts, s.pts.length);
+
+            // bright white core
+            ctx.globalAlpha = s.returnAlpha;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth   = 2.2;
+            ctx.shadowColor = '#ffffff';
+            ctx.shadowBlur  = 12;
+            strokePath(s.pts, s.pts.length);
+
+            // branches full bright
+            s.branches.forEach(bp => {
+              ctx.globalAlpha = s.returnAlpha * 0.75;
+              ctx.strokeStyle = color;
+              ctx.lineWidth   = 1.2;
+              ctx.shadowColor = color;
+              ctx.shadowBlur  = 14;
+              strokePath(bp, bp.length);
+            });
+            ctx.restore();
+
+            if (s.returnAlpha <= 0) {
+              s.phase      = 'glow';
+              s.phaseStart = now;
+              s.glowAlpha  = 0.7;
+            }
+          }
+
+          if (s.phase === 'glow') {
+            const elapsed = now - s.phaseStart;
+            // afterglow fades over ~300ms, with optional dart re-strikes
+            s.glowAlpha = Math.max(0, 0.7 - elapsed / 300);
+
+            ctx.save();
+            ctx.globalAlpha = s.glowAlpha * 0.6;
+            ctx.strokeStyle = color;
+            ctx.lineWidth   = 1.8;
+            ctx.lineCap     = 'round';
+            ctx.lineJoin    = 'round';
+            ctx.shadowColor = color;
+            ctx.shadowBlur  = 16;
+            strokePath(s.pts, s.pts.length);
+
+            // dart leader re-strikes: quick bright flash on same channel
+            if (s.dartCount > 0 && elapsed > 80 && elapsed < 200 && Math.random() < 0.08) {
+              ctx.globalAlpha = 0.9;
+              ctx.strokeStyle = '#ffffff';
+              ctx.lineWidth   = 1.4;
+              ctx.shadowBlur  = 8;
+              strokePath(s.pts, s.pts.length);
+              s.dartCount--;
+            }
+
+            s.branches.forEach(bp => {
+              ctx.globalAlpha = s.glowAlpha * 0.4;
+              ctx.strokeStyle = color;
+              ctx.lineWidth   = 0.8;
+              ctx.shadowBlur  = 8;
+              strokePath(bp, bp.length);
+            });
+            ctx.restore();
+
+            if (s.glowAlpha <= 0) {
+              s.phase  = 'idle';
+              // realistic inter-strike interval: 0.5s–4s
+              s.nextAt = now + 500 + Math.random() * 3500;
+            }
+          }
+        });
+
+        rafRef.current = requestAnimationFrame(stormFrame);
+      }
+
+      rafRef.current = requestAnimationFrame(stormFrame);
+      return () => cancelAnimationFrame(rafRef.current);
+    }
+
+    // ── plasma mode: continuous living bolts ──────────────────────────────
+    if (rayStyle === 'plasma') {
+      // spawn initial plasma bolts
+      plasma.current = Array.from({ length: count }, (_, i) => ({
+        angle:    (360 / count) * i + (Math.random() - 0.5) * 15,
+        endAngle: (360 / count) * i + (Math.random() - 0.5) * 15,
+        len:      size * (0.45 + Math.random() * 0.55),
+        born:     performance.now() - Math.random() * 600,
+      }));
+
+      // trail buffer: draw semi-transparent black each frame for motion blur
+      function plasmaFrame(now: number) {
+        // soft trail
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        ctx.fillRect(0, 0, S, S);
+
+        plasma.current.forEach((b, bi) => {
+          const age = now - b.born;
+          const life = 500 + Math.random() * 400; // ms per bolt
+
+          if (age > life) {
+            // respawn with slight angle drift
+            plasma.current[bi] = {
+              angle:    b.endAngle + (Math.random() - 0.5) * 40,
+              endAngle: b.endAngle + (Math.random() - 0.5) * 40,
+              len:      size * (0.4 + Math.random() * 0.6),
+              born:     now,
+            };
+            return;
+          }
+
+          // fade in/out envelope
+          const t = age / life;
+          const env = t < 0.15 ? t / 0.15 : t > 0.75 ? (1 - t) / 0.25 : 1;
+
+          const rad = (b.angle * Math.PI) / 180;
+          const sx  = cx + Math.cos(rad) * r;
+          const sy  = cy + Math.sin(rad) * r;
+          const ex  = cx + Math.cos(rad) * (r + b.len);
+          const ey  = cy + Math.sin(rad) * (r + b.len);
+
+          // redraw bolt shape every frame → living/trembling effect
+          const pts: [number, number][] = [[sx, sy]];
+          buildBolt(sx, sy, ex, ey, 0.55, 7, pts);
+
+          // outer glow pass
+          ctx.save();
+          ctx.globalAlpha = env * 0.35;
+          ctx.strokeStyle = color;
+          ctx.lineWidth   = 4;
+          ctx.lineCap     = 'round';
+          ctx.lineJoin    = 'round';
+          ctx.shadowColor = color;
+          ctx.shadowBlur  = 18;
+          ctx.beginPath();
+          ctx.moveTo(pts[0][0], pts[0][1]);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+          ctx.stroke();
+
+          // main colored bolt
+          ctx.globalAlpha = env * 0.85;
+          ctx.strokeStyle = color;
+          ctx.lineWidth   = 1.6;
+          ctx.shadowBlur  = 10;
+          ctx.beginPath();
+          ctx.moveTo(pts[0][0], pts[0][1]);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+          ctx.stroke();
+
+          // bright white core
+          ctx.globalAlpha = env * 0.7;
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth   = 0.6;
+          ctx.shadowBlur  = 4;
+          ctx.beginPath();
+          ctx.moveTo(pts[0][0], pts[0][1]);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+          ctx.stroke();
+
+          // sub-branches: pick 2-4 random points and shoot short bolts
+          const branchCount = 2 + Math.floor(Math.random() * 3);
+          for (let b2 = 0; b2 < branchCount; b2++) {
+            const pi = 3 + Math.floor(Math.random() * (pts.length - 6));
+            if (pi >= pts.length) continue;
+            const [bx, by] = pts[pi];
+            const bAngle = Math.atan2(ey - sy, ex - sx) + (Math.random() - 0.5) * 1.4;
+            const bLen   = b.len * (0.15 + Math.random() * 0.25);
+            const bPts: [number, number][] = [[bx, by]];
+            buildBolt(bx, by, bx + Math.cos(bAngle) * bLen, by + Math.sin(bAngle) * bLen, 0.6, 5, bPts);
+
+            ctx.globalAlpha = env * 0.5;
+            ctx.strokeStyle = color;
+            ctx.lineWidth   = 0.9;
+            ctx.shadowBlur  = 8;
+            ctx.beginPath();
+            ctx.moveTo(bPts[0][0], bPts[0][1]);
+            for (let i = 1; i < bPts.length; i++) ctx.lineTo(bPts[i][0], bPts[i][1]);
+            ctx.stroke();
+          }
+
+          ctx.restore();
+        });
+
+        rafRef.current = requestAnimationFrame(plasmaFrame);
+      }
+
+      rafRef.current = requestAnimationFrame(plasmaFrame);
+      return () => cancelAnimationFrame(rafRef.current);
+    }
+
+    // ── standard modes (normal / long / short / wide) ─────────────────────
+    const depth     = rayStyle === 'long'  ? 7 : rayStyle === 'short' ? 4 : 6;
+    const roughness = rayStyle === 'wide'  ? 0.7 : 0.5;
+    const boltLen   = rayStyle === 'long'  ? size * 0.85
+                    : rayStyle === 'short' ? size * 0.35
+                    : size * 0.6;
+    const branchP   = rayStyle === 'wide'  ? 0.18 : 0.12;
+
+    function frame(now: number) {
+      ctx.clearRect(0, 0, S, S);
+
+      bolts.current.forEach(b => {
+        if (!b.active && now >= b.nextAt) {
+          b.active = true;
+          b.alpha  = 1;
+          // generate shape once per flash
+          const rad = (b.angle * Math.PI) / 180;
+          const sx  = cx + Math.cos(rad) * r;
+          const sy  = cy + Math.sin(rad) * r;
+          const ex  = cx + Math.cos(rad) * (r + boltLen);
+          const ey  = cy + Math.sin(rad) * (r + boltLen);
+          b.pts = [[sx, sy]];
+          buildBolt(sx, sy, ex, ey, roughness, depth, b.pts);
+        }
+        if (!b.active) return;
+
+        drawBolt(
+          ctx,
+          b.pts[0][0], b.pts[0][1],
+          b.pts[b.pts.length - 1][0], b.pts[b.pts.length - 1][1],
+          color, b.alpha, 1.4, roughness, depth, branchP
+        );
+
+        b.alpha -= 0.045;
+        if (b.alpha <= 0) {
+          b.active = false;
+          b.nextAt = now + 400 + Math.random() * 1600;
+          b.angle += (Math.random() - 0.5) * (360 / count) * 0.4;
+        }
+      });
+
+      rafRef.current = requestAnimationFrame(frame);
+    }
+
+    rafRef.current = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [color, count, rayStyle, size]);
+
+  const S = size * 2.6;
   return (
-    <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,.8)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300,
-    }} onClick={e => e.target === e.currentTarget && onClose()}>
-      <div style={{
-        background: '#1e1e1e', borderRadius: 12, padding: 32, width: '100%', maxWidth: 560,
-        maxHeight: '90vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 20,
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ color: '#fff', fontSize: 18, fontWeight: 700 }}>Editar MÃºsica</h3>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#9ca3af', fontSize: 20, cursor: 'pointer' }}>âœ•</button>
-        </div>
+    <canvas
+      ref={canvasRef}
+      style={{
+        position: 'absolute',
+        left: '50%', top: '50%',
+        transform: 'translate(-50%, -50%)',
+        width: S, height: S,
+        pointerEvents: 'none',
+        zIndex: 0,
+      }}
+    />
+  );
+}
 
-        {/* Cover preview */}
-        <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-          <div style={{ width: 80, height: 80, borderRadius: 8, overflow: 'hidden', background: '#2a2a2a', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28 }}>
-            {form.coverUrl ? <img src={form.coverUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : 'ðŸŽµ'}
-          </div>
-          <div style={{ flex: 1 }}>
-            <div className="admin-label">URL da Capa</div>
-            <input className="admin-input" value={form.coverUrl} onChange={f('coverUrl')} placeholder="https://..." />
-          </div>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <div className="admin-form-group">
-            <label className="admin-label">TÃ­tulo</label>
-            <input className="admin-input" value={form.title} onChange={f('title')} />
-          </div>
-          <div className="admin-form-group">
-            <label className="admin-label">Artista</label>
-            <input className="admin-input" value={form.artist} onChange={f('artist')} />
-          </div>
-          <div className="admin-form-group">
-            <label className="admin-label">Ãlbum</label>
-            <input className="admin-input" value={form.albumName} onChange={f('albumName')} />
-          </div>
-          <div className="admin-form-group">
-            <label className="admin-label">DuraÃ§Ã£o (segundos)</label>
-            <input className="admin-input" type="number" value={form.duration} onChange={f('duration')} />
-          </div>
-        </div>
-
-        <button className="admin-btn admin-btn--primary" onClick={saveMetadata} disabled={saving}>
-          {saving ? 'â³ Salvando...' : 'ðŸ’¾ Salvar Metadados'}
-        </button>
-
-        <div style={{ borderTop: '1px solid #2a2a2a', paddingTop: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#d1d5db' }}>
-              {(song as any).available ? 'âœ… Arquivo de Ã¡udio vinculado' : 'âš ï¸ Sem arquivo de Ã¡udio â€” mÃºsica indisponÃ­vel'}
-            </span>
-          </div>
-
-          <div className="admin-label" style={{ marginBottom: 8 }}>Vincular arquivo de Ã¡udio</div>
-          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>
-            â˜ï¸ SerÃ¡ salvo no Supabase em <code>{form.artist || 'Artista'}/{form.albumName || 'Ãlbum'}</code>
-          </div>
-
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input ref={fileRef} type="file" accept="audio/*" hidden
-              onChange={e => setAudioFile(e.target.files?.[0] ?? null)} />
-            <button className="admin-btn admin-btn--ghost" onClick={() => fileRef.current?.click()}>
-              {audioFile ? `ðŸŽµ ${audioFile.name}` : 'ðŸ“‚ Selecionar arquivo'}
-            </button>
-            {audioFile && (
-              <button className="admin-btn admin-btn--primary" onClick={uploadAudio} disabled={uploading}
-                style={{ background: '#1db954' }}>
-                {uploading ? 'â³ Enviando...' : 'â¬†ï¸ Enviar e Vincular'}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {msg && <div className={`admin-msg${msg.startsWith('âŒ') ? ' admin-msg--error' : ' admin-msg--success'}`}>{msg}</div>}
+// ── Avatar with realistic lightning ──────────────────────────────────────────
+function AvatarOrb({
+  letter, image, rayColor, rayCount, rayStyle, size = 34, onClick,
+}: {
+  letter: string; image?: string; rayColor: string; rayCount: number;
+  rayStyle: string; size?: number; onClick?: () => void;
+}) {
+  return (
+    <div
+      className="adm-avatar-wrap"
+      style={{ width: size, height: size, cursor: onClick ? 'pointer' : 'default' }}
+      onClick={onClick}
+    >
+      <LightningCanvas color={rayColor} count={rayCount} rayStyle={rayStyle} size={size} />
+      <div className="adm-avatar-orb" style={{ width: size, height: size, background: image ? 'transparent' : undefined }}>
+        {image
+          ? <img src={image} alt="avatar" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+          : <span style={{ fontSize: size * 0.4 }}>{letter}</span>
+        }
       </div>
     </div>
   );
 }
 
-// â”€â”€ Songs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function Songs({ token }: { token: string }) {
-  const [songs, setSongs] = useState<Song[]>([]);
-  const [q, setQ] = useState('');
+// ── Profile Modal ─────────────────────────────────────────────────────────────
+interface ProfileData {
+  name: string;
+  username: string;
+  avatarUrl: string;
+  coverUrl: string;
+  badges: string[];
+  rayColor: string;
+  rayCount: number;
+  rayStyle: string;
+  nameColor: string;
+}
+
+const NAME_COLORS = [
+  { id: '#ef4444', label: 'Vermelho'  },
+  { id: '#f97316', label: 'Laranja'   },
+  { id: '#f59e0b', label: 'Âmbar'     },
+  { id: '#00FF88', label: 'Verde'     },
+  { id: '#00D4FF', label: 'Ciano'     },
+  { id: '#a78bfa', label: 'Roxo'      },
+  { id: '#f43f5e', label: 'Rosa'      },
+  { id: '#ffffff', label: 'Branco'    },
+];
+
+const RAY_PRESETS = [
+  { id: 'normal', label: 'Normal'  },
+  { id: 'long',   label: 'Longo'   },
+  { id: 'short',  label: 'Curto'   },
+  { id: 'wide',   label: 'Largo'   },
+  { id: 'plasma', label: '⚡ Plasma' },
+  { id: 'storm',  label: '🌩️ Tempestade (real)' },
+];
+
+const RAY_COLORS = [
+  { id: '#00FF88', label: 'Verde'   },
+  { id: '#a78bfa', label: 'Roxo'    },
+  { id: '#00D4FF', label: 'Ciano'   },
+  { id: '#f59e0b', label: 'Âmbar'   },
+  { id: '#f97316', label: 'Laranja' },
+  { id: '#f43f5e', label: 'Rosa'    },
+  { id: '#ffffff', label: 'Branco'  },
+];
+
+function ProfileModal({ profile, onSave, onClose }: {
+  profile: ProfileData;
+  onSave: (p: ProfileData) => void;
+  onClose: () => void;
+}) {
+  const [p, setP] = useState<ProfileData>({ ...profile });
+  const [avatarMode, setAvatarMode] = useState<'link' | 'file'>('link');
+  const [coverMode, setCoverMode] = useState<'link' | 'file'>('link');
+  const [coverOffset, setCoverOffset] = useState(50);
+  const avatarRef = useRef<HTMLInputElement>(null);
+  const coverRef  = useRef<HTMLInputElement>(null);
+
+  function handleFile(field: 'avatarUrl' | 'coverUrl', file: File) {
+    const url = URL.createObjectURL(file);
+    setP(prev => ({ ...prev, [field]: url }));
+  }
+
+  function toggleBadge(id: string) {
+    setP(prev => ({
+      ...prev,
+      badges: prev.badges.includes(id) ? prev.badges.filter(b => b !== id) : [...prev.badges, id],
+    }));
+  }
+
+  const letter = (p.name || p.username || '?')[0].toUpperCase();
+
+  return (
+    <div className="adm-modal-overlay">
+      <div className="adm-modal adm-modal--profile">
+
+        {/* cover */}
+        <div className="adm-profile-cover" style={{
+          backgroundImage: p.coverUrl ? `url(${p.coverUrl})` : undefined,
+          backgroundPositionY: `${coverOffset}%`,
+        }}>
+          <div className="adm-profile-cover__overlay" />
+          <div className="adm-profile-cover__avatar">
+            <AvatarOrb letter={letter} image={p.avatarUrl} rayColor={p.rayColor} rayCount={p.rayCount} rayStyle={p.rayStyle} size={72} />
+          </div>
+          <button className="adm-modal-close adm-profile-close" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="adm-profile-body">
+          {/* name + username */}
+          <div className="adm-profile-identity">
+            <div className="adm-profile-name-row">
+              <span className="adm-profile-name">{p.name || 'Sem nome'}</span>
+              <div className="adm-profile-badges-inline">
+                {p.badges.map(bid => {
+                  const b = ALL_BADGES.find(x => x.id === bid);
+                  return b ? <span key={bid} className="adm-profile-badge" style={{ borderColor: b.color, color: b.color }} title={b.label}>{b.emoji}</span> : null;
+                })}
+              </div>
+            </div>
+            <span className="adm-profile-username">@{p.username || 'username'}</span>
+          </div>
+
+          {/* form */}
+          <div className="adm-profile-section-title">Informações</div>
+          <div className="adm-form-row">
+            <label>Nome</label>
+            <input value={p.name} onChange={e => setP(v => ({ ...v, name: e.target.value }))} placeholder="Seu nome" />
+          </div>
+          <div className="adm-form-row">
+            <label>Nome de usuário</label>
+            <input value={p.username} onChange={e => setP(v => ({ ...v, username: e.target.value }))} placeholder="@username" />
+          </div>
+
+          {/* avatar */}
+          <div className="adm-profile-section-title">Foto de perfil</div>
+          <div className="adm-profile-source-tabs">
+            <button className={`adm-profile-src-tab${avatarMode === 'link' ? ' active' : ''}`} onClick={() => setAvatarMode('link')}>Link</button>
+            <button className={`adm-profile-src-tab${avatarMode === 'file' ? ' active' : ''}`} onClick={() => setAvatarMode('file')}>Arquivo</button>
+          </div>
+          {avatarMode === 'link'
+            ? <div className="adm-form-row"><label>URL da imagem</label><input value={p.avatarUrl} onChange={e => setP(v => ({ ...v, avatarUrl: e.target.value }))} placeholder="https://..." /></div>
+            : <div className="adm-form-row"><label>Selecionar arquivo</label><input ref={avatarRef} type="file" accept="image/*" onChange={e => e.target.files?.[0] && handleFile('avatarUrl', e.target.files[0])} /></div>
+          }
+
+          {/* cover */}
+          <div className="adm-profile-section-title">Capa do perfil</div>
+          <div className="adm-profile-source-tabs">
+            <button className={`adm-profile-src-tab${coverMode === 'link' ? ' active' : ''}`} onClick={() => setCoverMode('link')}>Link</button>
+            <button className={`adm-profile-src-tab${coverMode === 'file' ? ' active' : ''}`} onClick={() => setCoverMode('file')}>Arquivo</button>
+          </div>
+          {coverMode === 'link'
+            ? <div className="adm-form-row"><label>URL da capa</label><input value={p.coverUrl} onChange={e => setP(v => ({ ...v, coverUrl: e.target.value }))} placeholder="https://..." /></div>
+            : <div className="adm-form-row"><label>Selecionar arquivo</label><input ref={coverRef} type="file" accept="image/*" onChange={e => e.target.files?.[0] && handleFile('coverUrl', e.target.files[0])} /></div>
+          }
+          <div className="adm-form-row">
+            <label>Ajuste vertical da capa ({coverOffset}%)</label>
+            <input type="range" min={0} max={100} value={coverOffset} onChange={e => setCoverOffset(Number(e.target.value))} />
+          </div>
+
+          {/* name color */}
+          <div className="adm-profile-section-title">Cor do nome</div>
+          <div className="adm-form-row">
+            <div className="adm-ray-colors">
+              {NAME_COLORS.map(c => (
+                <button
+                  key={c.id}
+                  className={`adm-ray-color-btn${p.nameColor === c.id ? ' active' : ''}`}
+                  style={{ background: c.id, boxShadow: p.nameColor === c.id ? `0 0 10px ${c.id}` : undefined }}
+                  title={c.label}
+                  onClick={() => setP(v => ({ ...v, nameColor: c.id }))}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* badges */}
+          <div className="adm-profile-section-title">Badges</div>
+          <div className="adm-badge-picker">
+            {ALL_BADGES.map(b => (
+              <button
+                key={b.id}
+                className={`adm-badge-pick-btn${p.badges.includes(b.id) ? ' active' : ''}`}
+                style={{ '--badge-color': b.color } as any}
+                onClick={() => toggleBadge(b.id)}
+              >
+                {b.emoji} {b.label}
+              </button>
+            ))}
+          </div>
+
+          {/* lightning */}
+          <div className="adm-profile-section-title">⚡ Efeito de Raios</div>
+          <div className="adm-form-row">
+            <label>Cor dos raios</label>
+            <div className="adm-ray-colors">
+              {RAY_COLORS.map(c => (
+                <button
+                  key={c.id}
+                  className={`adm-ray-color-btn${p.rayColor === c.id ? ' active' : ''}`}
+                  style={{ background: c.id, boxShadow: p.rayColor === c.id ? `0 0 10px ${c.id}` : undefined }}
+                  title={c.label}
+                  onClick={() => setP(v => ({ ...v, rayColor: c.id }))}
+                />
+              ))}
+            </div>
+          </div>
+          <div className="adm-form-row">
+            <label>Estilo dos raios</label>
+            <div className="adm-ray-styles">
+              {RAY_PRESETS.map(r => (
+                <button
+                  key={r.id}
+                  className={`adm-profile-src-tab${p.rayStyle === r.id ? ' active' : ''}`}
+                  onClick={() => setP(v => ({ ...v, rayStyle: r.id }))}
+                >{r.label}</button>
+              ))}
+            </div>
+          </div>
+          <div className="adm-form-row">
+            <label>Quantidade de raios ({p.rayCount})</label>
+            <input type="range" min={4} max={16} step={2} value={p.rayCount} onChange={e => setP(v => ({ ...v, rayCount: Number(e.target.value) }))} />
+          </div>
+
+          <div className="adm-modal__actions" style={{ marginTop: 20 }}>
+            <button className="adm-btn adm-magic-btn" onClick={() => { onSave(p); onClose(); }}>Salvar perfil</button>
+            <button className="adm-btn adm-btn--ghost" onClick={onClose}>Cancelar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+function Sidebar({ page, setPage, onExit, onLogout }: { page: AdminPage; setPage: (p: AdminPage) => void; onExit: () => void; onLogout: () => void }) {
+  const items: { id: AdminPage; label: string; icon: string }[] = [
+    { id: 'dashboard', label: 'Dashboard', icon: '⊞' },
+    { id: 'songs',     label: 'Músicas',   icon: '♪' },
+    { id: 'users',     label: 'Usuários',  icon: '👥' },
+    { id: 'import',    label: 'Importar',  icon: '⬆' },
+    { id: 'activity',  label: 'Atividades',icon: '📋' },
+    { id: 'update',    label: 'Atualizações', icon: '↻' },
+    { id: 'settings',  label: 'Configurações', icon: '⚙' },
+  ];
+  return (
+    <aside className="adm-sidebar">
+      <div className="adm-logo">
+        <OursMusicLogo size={20} showName={false} />
+        <span>OursMusic</span>
+      </div>
+      <nav className="adm-nav">
+        {items.map(i => (
+          <button key={i.id} className={`adm-nav__item${page === i.id ? ' adm-nav__item--active' : ''}`} onClick={() => setPage(i.id)}>
+            <span className="adm-nav__icon">{i.icon}</span>
+            <span>{i.label}</span>
+          </button>
+        ))}
+      </nav>
+      <button className="adm-nav__item adm-nav__exit" onClick={onExit}>
+        <span className="adm-nav__icon">←</span>
+        <span>Voltar ao Player</span>
+      </button>
+      <button className="adm-nav__item adm-nav__logout" onClick={() => { if (confirm('Sair da conta?')) onLogout(); }}>
+        <span className="adm-nav__icon">⏻</span>
+        <span>Sair da conta</span>
+      </button>
+    </aside>
+  );
+}
+
+// ── Topbar ────────────────────────────────────────────────────────────────────
+function Topbar({ userEmail, search, setSearch, profile, onOpenProfile }: {
+  userEmail: string; search: string; setSearch: (s: string) => void;
+  profile: ProfileData; onOpenProfile: () => void;
+}) {
+  const letter = (profile.name || userEmail)[0].toUpperCase();
+  const activeBadges = ALL_BADGES.filter(b => profile.badges.includes(b.id));
+
+  return (
+    <header className="adm-topbar">
+      <span className="adm-topbar__brand">OursMusic</span>
+      <div className="adm-topbar__search">
+        <span>🔍</span>
+        <input placeholder="Buscar músicas, usuários..." value={search} onChange={e => setSearch(e.target.value)} />
+      </div>
+      <div className="adm-topbar__right">
+        <div className="adm-topbar__secure">🔒 Secure • HTTPS • 2FA</div>
+        <div className="adm-topbar__restricted">Acesso Restrito — Admins</div>
+        {/* badges ao lado do avatar */}
+        <div className="adm-topbar__badges">
+          {activeBadges.map(b => (
+            <span key={b.id} className="adm-topbar-badge" style={{ color: b.color, borderColor: b.color }} title={b.label}>{b.emoji}</span>
+          ))}
+        </div>
+        <AvatarOrb
+          letter={letter}
+          image={profile.avatarUrl}
+          rayColor={profile.rayColor}
+          rayCount={profile.rayCount}
+          rayStyle={profile.rayStyle}
+          size={36}
+          onClick={onOpenProfile}
+        />
+      </div>
+    </header>
+  );
+}
+
+// ── Stat Card ─────────────────────────────────────────────────────────────────
+function StatCard({ label, value, icon, delta, color }: { label: string; value: string | number; icon: string; delta?: string; color?: string }) {
+  return (
+    <div className="adm-stat-card">
+      <div className="adm-stat-card__icon" style={{ color: color ?? '#7c3aed' }}>{icon}</div>
+      <div className="adm-stat-card__body">
+        <div className="adm-stat-card__value">{value}</div>
+        <div className="adm-stat-card__label">{label}</div>
+        {delta && <div className={`adm-stat-card__delta ${delta.startsWith('+') ? 'pos' : 'neg'}`}>{delta}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+function Dashboard({ token, profile }: { token: string; profile: ProfileData }) {
+  const [stats, setStats] = useState<any>(null);
+  const [activity, setActivity] = useState<any[]>([]);
+  const [playStats, setPlayStats] = useState<any[]>([]);
+
+  useEffect(() => {
+    apiFetch('/admin/stats', token).then(setStats).catch(() => {});
+    apiFetch('/admin/activity?limit=10', token).then(d => setActivity(Array.isArray(d) ? d : [])).catch(() => {});
+    apiFetch('/admin/songs/play-stats', token).then(d => {
+      let songs = [];
+      if (Array.isArray(d)) songs = d;
+      else if (d?.songs && Array.isArray(d.songs)) songs = d.songs;
+      setPlayStats(songs.slice(0, 10));
+    }).catch(() => {});
+  }, [token]);
+
+  const maxPlays = playStats[0]?.playCount ?? 1;
+  const activeBadges = ALL_BADGES.filter(b => profile.badges.includes(b.id));
+  const letter = (profile.name || 'A')[0].toUpperCase();
+
+  return (
+    <div className="adm-page">
+      {/* greeting row with name + badges */}
+      <div className="adm-dashboard-greeting">
+        <AvatarOrb letter={letter} image={profile.avatarUrl} rayColor={profile.rayColor} rayCount={profile.rayCount} rayStyle={profile.rayStyle} size={48} />
+        <div>
+          <div className="adm-dashboard-name-row">
+            <span className="adm-dashboard-name">
+              <span className="adm-name-shine" style={{ color: profile.nameColor || '#ef4444' }}>{profile.name || 'Admin'}</span>
+            </span>
+            {activeBadges.map(b => (
+              <span key={b.id} className="adm-profile-badge" style={{ borderColor: b.color, color: b.color }} title={b.label}>{b.emoji} {b.label}</span>
+            ))}
+          </div>
+          <span className="adm-dashboard-sub">Bem-vindo ao painel de controle</span>
+        </div>
+      </div>
+
+      <div className="adm-stats-grid">
+        <StatCard label="Total de Músicas" value={stats?.totalSongs ?? '—'} icon="🎵" delta="+12%" />
+        <StatCard label="Usuários Ativos" value={stats?.totalUsers ?? '—'} icon="👥" delta="+5%" color="#00D4FF" />
+        <StatCard label="Playlists" value={stats?.totalPlaylists ?? '—'} icon="📋" color="#a78bfa" />
+        <StatCard label="Atividades" value={stats?.totalActivities ?? '—'} icon="📊" delta="+8%" color="#f59e0b" />
+      </div>
+
+      <div className="adm-charts-row">
+        <div className="adm-card adm-card--wide">
+          <div className="adm-card__title">Top 10 Músicas Mais Tocadas</div>
+          {playStats.length === 0 ? <div className="adm-empty">Sem dados</div> : (
+            <div className="adm-bar-chart">
+              {playStats.map((s, i) => (
+                <div key={s.id} className="adm-bar-chart__row">
+                  <span className="adm-bar-chart__rank">#{i + 1}</span>
+                  <span className="adm-bar-chart__name">{s.title}</span>
+                  <div className="adm-bar-chart__bar-wrap">
+                    <div className="adm-bar-chart__bar" style={{ width: `${Math.round((s.playCount / maxPlays) * 100)}%` }} />
+                  </div>
+                  <span className="adm-bar-chart__count">{s.playCount}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="adm-card">
+          <div className="adm-card__title">Distribuição de Planos</div>
+          {stats?.planDistribution ? (
+            <div className="adm-plan-dist">
+              {Object.entries(stats.planDistribution).map(([plan, count]: any) => (
+                <div key={plan} className="adm-plan-dist__row">
+                  <span className="adm-plan-dist__label">{plan}</span>
+                  <span className="adm-plan-dist__count">{count}</span>
+                </div>
+              ))}
+            </div>
+          ) : <div className="adm-empty">Sem dados</div>}
+        </div>
+      </div>
+
+      <div className="adm-card adm-card--full">
+        <div className="adm-card__title">Últimas Atividades</div>
+        <table className="adm-table">
+          <thead><tr><th>Usuário</th><th>Ação</th><th>Música</th><th>Data/Hora</th></tr></thead>
+          <tbody>
+            {activity.length === 0
+              ? <tr><td colSpan={4} className="adm-empty">Sem atividades</td></tr>
+              : activity.map((a, i) => (
+                <tr key={i}>
+                  <td>{a.user?.email ?? a.userId ?? '—'}</td>
+                  <td><span className="adm-badge">{a.action}</span></td>
+                  <td>{a.song?.title ?? a.songId ?? '—'}</td>
+                  <td>{a.createdAt ? new Date(a.createdAt).toLocaleString('pt-BR') : '—'}</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Songs Page ────────────────────────────────────────────────────────────────
+function SongsPage({ token, search }: { token: string; search: string }) {
+  const [songs, setSongs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [deleting, setDeleting] = useState<string | null>(null);
-  const [msg, setMsg] = useState('');
-  const [enriching, setEnriching] = useState(false);
-  const [editingSong, setEditingSong] = useState<Song | null>(null);
+  const [editSong, setEditSong] = useState<any | null>(null);
 
-  function load(query = '') {
+  const load = useCallback(() => {
     setLoading(true);
-    api(`/admin/songs${query ? `?q=${encodeURIComponent(query)}` : ''}`, token)
-      .then(setSongs).finally(() => setLoading(false));
+    apiFetch(`/admin/songs${search ? `?q=${encodeURIComponent(search)}` : ''}`, token)
+      .then(d => setSongs(Array.isArray(d) ? d : []))
+      .finally(() => setLoading(false));
+  }, [token, search]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function deleteSong(id: string) {
+    if (!confirm('Excluir esta música?')) return;
+    await fetch(`${API_URL}/admin/songs/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    load();
   }
 
-  useEffect(() => { load(); }, [token]);
-
-  async function del(id: string, title: string) {
-    if (!confirm(`Deletar "${title}"?`)) return;
-    setDeleting(id);
-    try {
-      await api(`/admin/songs/${id}`, token, { method: 'DELETE' });
-      setSongs(s => s.filter(x => x.id !== id));
-      setMsg('MÃºsica deletada.');
-    } catch (e: any) { setMsg(e.message); }
-    finally { setDeleting(null); }
-  }
-
-  async function enrich(all = false) {
-    setEnriching(true); setMsg('');
-    try {
-      const data = await api(`/admin/spotify/enrich${all ? '?all=true' : ''}`, token, { method: 'POST' });
-      setMsg(`âœ… Metadados: ${data.enriched} enriquecidas Â· ${data.notFound} nÃ£o encontradas`);
-      load(q);
-    } catch (e: any) { setMsg(`âŒ ${e.message}`); }
-    finally { setEnriching(false); }
-  }
-
-  async function enrichLyrics() {
-    setEnriching(true); setMsg('');
-    try {
-      const data = await api('/admin/spotify/enrich-lyrics', token, { method: 'POST' });
-      setMsg(`ðŸŽ¤ Letras: ${data.enriched} encontradas Â· ${data.notFound} nÃ£o encontradas`);
-    } catch (e: any) { setMsg(`âŒ ${e.message}`); }
-    finally { setEnriching(false); }
-  }
-
-  async function enrichGenres() {
-    setEnriching(true); setMsg('');
-    try {
-      const data = await api('/admin/spotify/enrich-genres', token, { method: 'POST' });
-      setMsg(`Gêneros: ${data.enriched} encontrados / ${data.notFound} não encontrados`);
-      load(q);
-    } catch (e: any) { setMsg(e.message); }
-    finally { setEnriching(false); }
+  async function saveEdit() {
+    if (!editSong) return;
+    await fetch(`${API_URL}/admin/songs/${editSong.id}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: editSong.title, artist: editSong.artist, albumName: editSong.albumName, genre: editSong.genre }),
+    });
+    setEditSong(null);
+    load();
   }
 
   return (
-    <div>
-      <h2 className="admin-section-title">MÃºsicas ({songs.length})</h2>
-      {msg && <div className="admin-msg">{msg}</div>}
-      <div className="admin-search-row">
-        <input className="admin-input" placeholder="Buscar mÃºsicas..." value={q}
-          onChange={e => setQ(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && load(q)} />
-        <button className="admin-btn admin-btn--primary" onClick={() => load(q)}>Buscar</button>
-        <button
-          className="admin-btn admin-btn--primary"
-          onClick={() => enrich(false)}
-          disabled={enriching}
-          title="Busca metadados no Deezer/MusicBrainz para mÃºsicas sem capa/artista"
-          style={{ background: '#1db954', marginLeft: 'auto' }}
-        >
-          {enriching ? 'â³ Buscando...' : 'ðŸŽµ Enriquecer Metadados'}
-        </button>
-        <button
-          className="admin-btn admin-btn--ghost"
-          onClick={() => enrichLyrics()}
-          disabled={enriching}
-          title="Busca letras sincronizadas via LRCLIB"
-        >
-          ðŸŽ¤ Buscar Letras
-        </button>
-        <button
-          className="admin-btn admin-btn--ghost"
-          onClick={() => enrichGenres()}
-          disabled={enriching}
-          title="Busca genero musical no Deezer para cada musica"
-        >
-          Buscar Generos
-        </button>
-        <button
-          className="admin-btn admin-btn--ghost"
-          onClick={async () => {
-            setEnriching(true); setMsg('');
-            try {
-              const data = await api('/admin/drive/make-public', token, { method: 'POST' });
-              setMsg(`âœ… ${data.updated} arquivos tornados pÃºblicos Â· ${data.errors} erros`);
-            } catch (e: any) { setMsg(`âŒ ${e.message}`); }
-            finally { setEnriching(false); }
-          }}
-          disabled={enriching}
-          title="Torna todos os arquivos do Drive acessÃ­veis para streaming"
-        >
-          ðŸ”“ Tornar PÃºblicos
-        </button>
-      </div>
-      {loading ? <div className="admin-loading">Carregando...</div> : (
-        <div className="admin-table-wrap">
-          <table className="admin-table">
-            <thead><tr><th>#</th><th>TÃ­tulo</th><th>Artista</th><th>Ãlbum</th><th>Storage</th><th>Tipo</th><th>DuraÃ§Ã£o</th><th style={{ textAlign: 'right' }}>â–¶ Plays</th><th>Adicionada</th><th></th></tr></thead>
+    <div className="adm-page">
+      <h1 className="adm-page__title">Músicas <span className="adm-badge">{songs.length}</span></h1>
+      {loading ? <div className="adm-loading">Carregando...</div> : (
+        <div className="adm-card adm-card--full">
+          <table className="adm-table">
+            <thead><tr><th>Capa</th><th>Título</th><th>Artista</th><th>Álbum</th><th>Gênero</th><th>Plays</th><th>Ações</th></tr></thead>
             <tbody>
-              {songs.map((s, i) => (
+              {songs.map(s => (
                 <tr key={s.id}>
-                  <td className="admin-table__muted">{i + 1}</td>
+                  <td><div className="adm-cover">{s.coverUrl ? <img src={s.coverUrl} alt="" /> : '🎵'}</div></td>
+                  <td>{s.title}</td>
+                  <td>{s.artist ?? '—'}</td>
+                  <td>{s.albumName ?? '—'}</td>
+                  <td>{s.genre ?? '—'}</td>
+                  <td>{s.playCount ?? 0}</td>
                   <td>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      {(s as any).coverUrl
-                        ? <img src={(s as any).coverUrl} alt="" width={36} height={36} style={{ borderRadius: 4, objectFit: 'cover' }} />
-                        : <div style={{ width: 36, height: 36, background: '#2a2a2a', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>ðŸŽµ</div>
-                      }
-                      <strong>{s.title}</strong>
-                    </div>
-                  </td>
-                  <td className="admin-table__muted">{(s as any).artist || 'â€”'}</td>
-                  <td className="admin-table__muted">{(s as any).albumName || 'â€”'}</td>
-                  <td><span className={`admin-badge admin-badge--${s.storageType}`}>{s.storageType}</span></td>
-                  <td className="admin-table__muted">{s.mimeType.replace('audio/', '')}</td>
-                  <td className="admin-table__muted">{Math.floor(s.duration / 60)}:{String(s.duration % 60).padStart(2, '0')}</td>
-                  <td style={{ textAlign: 'right' }}>
-                    {(s as any).playCount > 0
-                      ? <span style={{ background: '#1db954', color: '#000', borderRadius: 10, padding: '1px 8px', fontSize: 11, fontWeight: 700 }}>{(s as any).playCount}</span>
-                      : <span style={{ color: '#535353', fontSize: 11 }}>0</span>
-                    }
-                  </td>
-                  <td className="admin-table__muted">{new Date(s.createdAt).toLocaleDateString('pt-BR')}</td>
-                  <td>
-                    <button className="admin-btn admin-btn--ghost admin-btn--sm"
-                      onClick={() => setEditingSong(s)} title="Editar">âœï¸</button>
-                    <button className="admin-btn admin-btn--danger admin-btn--sm"
-                      onClick={() => del(s.id, s.title)} disabled={deleting === s.id}
-                      style={{ marginLeft: 4 }}>
-                      {deleting === s.id ? '...' : 'ðŸ—‘'}
-                    </button>
+                    <button className="adm-btn adm-btn--sm" onClick={() => setEditSong({ ...s })}>Editar</button>
+                    <button className="adm-btn adm-btn--sm adm-btn--danger" onClick={() => deleteSong(s.id)}>Excluir</button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {songs.length === 0 && <div className="admin-empty">Nenhuma mÃºsica encontrada.</div>}
         </div>
       )}
-
-      {editingSong && (
-        <EditSongModal
-          song={editingSong}
-          token={token}
-          onClose={() => setEditingSong(null)}
-          onSaved={updated => {
-            setSongs(ss => ss.map(s => s.id === updated.id ? updated : s));
-            setEditingSong(updated);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-// â”€â”€ Upload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function Upload({ token }: { token: string }) {
-  const [files, setFiles] = useState<File[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [results, setResults] = useState<{ name: string; status: 'ok' | 'err' | 'dup'; msg: string }[]>([]);
-  const [_progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  function onDrop(e: React.DragEvent) {
-    e.preventDefault();
-    const dropped = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('audio/'));
-    setFiles(prev => [...prev, ...dropped]);
-  }
-
-  async function uploadOne(file: File): Promise<{ name: string; status: 'ok' | 'err' | 'dup'; msg: string }> {
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('storageType', 's3');
-    try {
-      const data = await api('/admin/songs/upload', token, { method: 'POST', body: fd });
-      if (data.duplicate) {
-        return { name: file.name, status: 'dup', msg: `âš ï¸ ${data.message}` };
-      }
-      return { name: file.name, status: 'ok', msg: data.matched_from_csv ? `ðŸ”— Vinculado ao CSV: ${data.title}` : `âœ“ ${data.title}` };
-    } catch (e: any) {
-      return { name: file.name, status: 'err', msg: `âœ— ${e.message}` };
-    }
-  }
-
-  async function upload() {
-    if (!files.length) return;
-    setUploading(true);
-    setResults([]);
-    setProgress({ done: 0, total: files.length });
-
-    // Upload em paralelo com concorrÃªncia mÃ¡xima de 3
-    const CONCURRENCY = 3;
-    const queue = [...files];
-    const allResults: { name: string; status: 'ok' | 'err' | 'dup'; msg: string }[] = [];
-
-    while (queue.length > 0) {
-      const batch = queue.splice(0, CONCURRENCY);
-      const batchResults = await Promise.all(batch.map(uploadOne));
-      allResults.push(...batchResults);
-      setResults([...allResults]);
-      setProgress(p => p ? { done: p.done + batch.length, total: p.total } : null);
-    }
-
-    setUploading(false);
-    setProgress(null);
-    setFiles([]);
-  }
-
-  return (
-    <div>
-      <h2 className="admin-section-title">Upload de MÃºsicas</h2>
-      <div className="admin-info-box" style={{ marginBottom: 16 }}>
-        â˜ï¸ Os arquivos serÃ£o salvos no <strong>Supabase Storage</strong> organizados por <strong>Artista â†’ Ãlbum</strong>.
-      </div>
-
-      <div
-        className="admin-dropzone"
-        onDrop={onDrop}
-        onDragOver={e => e.preventDefault()}
-        onClick={() => inputRef.current?.click()}
-      >
-        <div className="admin-dropzone__icon">ðŸŽµ</div>
-        <div className="admin-dropzone__text">Arraste arquivos de Ã¡udio aqui ou clique para selecionar</div>
-        <div className="admin-dropzone__sub">MP3, FLAC, AAC, OGG â€” mÃ¡x. 500 MB por arquivo</div>
-        <input ref={inputRef} type="file" accept="audio/*" multiple hidden
-          onChange={e => setFiles(prev => [...prev, ...Array.from(e.target.files ?? [])])} />
-      </div>
-
-      {files.length > 0 && (
-        <div className="admin-file-list">
-          <div className="admin-file-list__header">
-            <span>{files.length} arquivo(s) selecionado(s)</span>
-            <button className="admin-btn admin-btn--ghost admin-btn--sm" onClick={() => setFiles([])}>Limpar</button>
+      {editSong && (
+        <div className="adm-modal-overlay" onClick={() => setEditSong(null)}>
+          <div className="adm-modal" onClick={e => e.stopPropagation()}>
+            <div className="adm-modal__title">Editar Música</div>
+            {(['title', 'artist', 'albumName', 'genre'] as const).map(f => (
+              <div key={f} className="adm-form-row">
+                <label>{f}</label>
+                <input value={editSong[f] ?? ''} onChange={e => setEditSong((s: any) => ({ ...s, [f]: e.target.value }))} />
+              </div>
+            ))}
+            <div className="adm-modal__actions">
+              <button className="adm-btn" onClick={saveEdit}>Salvar</button>
+              <button className="adm-btn adm-btn--ghost" onClick={() => setEditSong(null)}>Cancelar</button>
+            </div>
           </div>
-          {files.map((f, i) => (
-            <div key={i} className="admin-file-item">
-              <span className="admin-file-item__name">ðŸŽµ {f.name}</span>
-              <span className="admin-file-item__size">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
-              <button className="admin-btn admin-btn--ghost admin-btn--sm" onClick={() => setFiles(fs => fs.filter((_, j) => j !== i))}>âœ•</button>
-            </div>
-          ))}
-          <button className="admin-btn admin-btn--primary admin-btn--lg" onClick={upload} disabled={uploading}>
-            {uploading ? 'â³ Enviando...' : `â¬†ï¸ Enviar ${files.length} arquivo(s) para Supabase`}
-          </button>
-        </div>
-      )}
-
-      {results.length > 0 && (
-        <div className="admin-results">
-          <h3 className="admin-subsection-title">Resultado</h3>
-          {results.map((r, i) => (
-            <div key={i} className={`admin-result-item admin-result-item--${r.status}`}>
-              <span className="admin-result-item__name">{r.name}</span>
-              <span className="admin-result-item__msg">{r.msg}</span>
-            </div>
-          ))}
         </div>
       )}
     </div>
   );
 }
 
-// â”€â”€ CSV Import Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function CsvImportCard({ token }: { token: string }) {
-  const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ imported: number; skipped: number; errors: number; songs: any[] } | null>(null);
-  const [error, setError] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+// ── Users Page ────────────────────────────────────────────────────────────────
+function UsersPage({ token, search }: { token: string; search: string }) {
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  async function uploadCsv() {
-    if (!csvFile) return;
-    setLoading(true); setResult(null); setError('');
-    const fd = new FormData();
-    fd.append('file', csvFile);
-    try {
-      const data = await api('/admin/songs/import-csv', token, { method: 'POST', body: fd });
-      setResult(data);
-      setCsvFile(null);
-    } catch (e: any) { setError(e.message); }
-    finally { setLoading(false); }
+  const load = useCallback(() => {
+    setLoading(true);
+    apiFetch(`/admin/users${search ? `?q=${encodeURIComponent(search)}` : ''}`, token)
+      .then(d => setUsers(Array.isArray(d) ? d : []))
+      .finally(() => setLoading(false));
+  }, [token, search]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function setPlan(id: string, plan: string, days?: number) {
+    await apiFetch(`/admin/users/${id}/plan`, token, {
+      method: 'PUT',
+      body: JSON.stringify({ plan, durationDays: days }),
+    });
+    load();
+  }
+
+  async function toggleAdmin(id: string, current: boolean) {
+    await apiFetch(`/admin/users/${id}/admin`, token, {
+      method: 'PUT',
+      body: JSON.stringify({ isAdmin: !current }),
+    });
+    load();
+  }
+
+  async function deleteUser(id: string) {
+    if (!confirm('Excluir este usuário?')) return;
+    await apiFetch(`/admin/users/${id}`, token, { method: 'DELETE' });
+    load();
   }
 
   return (
-    <div className="admin-import-card" style={{ borderColor: '#3b82f6', border: '1px solid #3b82f6', gridColumn: '1 / -1' }}>
-      <div className="admin-import-card__icon">ðŸ“„</div>
-      <h3>Importar via CSV</h3>
-      <p style={{ fontSize: 13, color: '#9ca3af', marginBottom: 10 }}>
-        FaÃ§a upload de um arquivo <code>.csv</code> com metadados das mÃºsicas. Colunas suportadas:
-        <code style={{ display: 'block', marginTop: 6, background: '#111', padding: '4px 8px', borderRadius: 4, fontSize: 11 }}>
-          title, artist, album, duration, cover_url, storage_path, storage_type
-        </code>
-        MÃºsicas sem <code>storage_path</code> ficam marcadas como <em>em breve</em> â€” ao fazer upload do Ã¡udio com o mesmo tÃ­tulo, o sistema vincula automaticamente.
-      </p>
-
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button className="admin-btn admin-btn--ghost" onClick={() => inputRef.current?.click()} style={{ borderColor: '#3b82f6' }}>
-          ðŸ“‚ {csvFile ? csvFile.name : 'Selecionar arquivo .csv'}
-        </button>
-        <input ref={inputRef} type="file" accept=".csv,text/csv" hidden
-          onChange={e => { setCsvFile(e.target.files?.[0] ?? null); setResult(null); setError(''); }} />
-        {csvFile && (
-          <button className="admin-btn admin-btn--primary" onClick={uploadCsv} disabled={loading}
-            style={{ background: '#3b82f6' }}>
-            {loading ? 'â³ Importando...' : 'â¬†ï¸ Importar CSV'}
-          </button>
-        )}
-        {csvFile && (
-          <button className="admin-btn admin-btn--ghost admin-btn--sm" onClick={() => setCsvFile(null)}>âœ•</button>
-        )}
-      </div>
-
-      {error && <div className="admin-msg admin-msg--error" style={{ marginTop: 10 }}>âŒ {error}</div>}
-
-      {result && (
-        <div style={{ marginTop: 12 }}>
-          <div className="admin-msg admin-msg--success">
-            âœ… <strong>{result.imported}</strong> importadas Â· <strong>{result.skipped}</strong> jÃ¡ existiam Â· <strong>{result.errors}</strong> erros
-          </div>
-          {result.songs.length > 0 && (
-            <div className="admin-table-wrap" style={{ marginTop: 10, maxHeight: 240, overflowY: 'auto' }}>
-              <table className="admin-table">
-                <thead><tr><th>TÃ­tulo</th><th>Artista</th><th>Status</th></tr></thead>
-                <tbody>
-                  {result.songs.map((s: any, i: number) => (
-                    <tr key={i}>
-                      <td><strong>{s.title}</strong></td>
-                      <td className="admin-table__muted">{s.artist || 'â€”'}</td>
-                      <td><span style={{ fontSize: 11, color: s.status.includes('error') ? '#ef4444' : s.status.includes('skipped') ? '#f59e0b' : '#1db954' }}>{s.status}</span></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+    <div className="adm-page">
+      <h1 className="adm-page__title">Usuários <span className="adm-badge">{users.length}</span></h1>
+      {loading ? <div className="adm-loading">Carregando...</div> : (
+        <div className="adm-card adm-card--full">
+          <table className="adm-table">
+            <thead><tr><th>Email</th><th>Nome</th><th>Plano</th><th>Admin</th><th>Criado em</th><th>Ações</th></tr></thead>
+            <tbody>
+              {users.map(u => (
+                <tr key={u.id}>
+                  <td>{u.email}</td>
+                  <td>{u.name ?? '—'}</td>
+                  <td>
+                    <select className="adm-select" value={u.plan} onChange={e => setPlan(u.id, e.target.value, e.target.value === 'free' ? undefined : -1)}>
+                      <option value="free">Free</option>
+                      <option value="premium">Premium</option>
+                      <option value="family">Family</option>
+                    </select>
+                  </td>
+                  <td>
+                    <button className={`adm-btn adm-btn--sm ${u.isAdmin ? 'adm-btn--active' : 'adm-btn--ghost'}`} onClick={() => toggleAdmin(u.id, u.isAdmin)}>
+                      {u.isAdmin ? 'Admin ✓' : 'Admin'}
+                    </button>
+                  </td>
+                  <td>{u.createdAt ? new Date(u.createdAt).toLocaleDateString('pt-BR') : '—'}</td>
+                  <td><button className="adm-btn adm-btn--sm adm-btn--danger" onClick={() => deleteUser(u.id)}>Excluir</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
@@ -558,1057 +1110,929 @@ function CsvImportCard({ token }: { token: string }) {
 }
 
 // ── Magic Import Modal ────────────────────────────────────────────────────────
-function MagicImportModal({ token, onClose }: { token: string; onClose: () => void }) {
-  const [mode, setMode] = useState<'album' | 'url' | 'pending'>('album');
-  const [artist, setArtist] = useState('');
-  const [album, setAlbum] = useState('');
-  const [spotifyUrl, setSpotifyUrl] = useState('');
-  const [maxTracks, setMaxTracks] = useState(20);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ imported: number; skipped: number; errors: number; tracks: any[]; importType?: string } | null>(null);
-  const [error, setError] = useState('');
-  const [progress, setProgress] = useState<{ percent: number; track: string; status: string } | null>(null);
+type MagicMode = 'album_artist' | 'track' | 'album_only' | 'playlist' | 'artist' | 'all_albums';
 
-  async function run() {
-    if (mode === 'album' && (!artist.trim() || !album.trim())) return;
-    if (mode === 'url' && !spotifyUrl.trim()) return;
-    const jobId = `job-${Date.now()}`;
-    setLoading(true); setResult(null); setError(''); setProgress(null);
-    const evtSource = new EventSource(`${API}/events/magic-import/${jobId}`);
-    evtSource.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if (data.done) { evtSource.close(); return; }
-      setProgress({ percent: data.percent, track: data.track, status: data.status });
-    };
-    evtSource.onerror = () => evtSource.close();
-    try {
-      const endpoint = mode === 'url' ? '/admin/magic-import/url'
-        : mode === 'pending' ? '/admin/magic-import/pending'
-        : '/admin/magic-import';
-      const body = mode === 'url' ? { url: spotifyUrl.trim(), maxTracks, jobId }
-        : mode === 'pending' ? { jobId }
-        : { artist: artist.trim(), album: album.trim(), maxTracks, jobId };
-      const data = await api(endpoint, token, { method: 'POST', body: JSON.stringify(body) });
-      setResult(data);
-    } catch (e: any) { setError(e.message); }
-    finally { setLoading(false); setProgress(null); evtSource.close(); }
+interface ArtistTrack { id: string; title: string; artist: string; album: string; coverUrl: string; durationMs: number; }
+
+function ArtistPickerModal({ token, artist, onConfirm, onClose }: {
+  token: string; artist: string;
+  onConfirm: (tracks: ArtistTrack[], jobId: string) => void;
+  onClose: () => void;
+}) {
+  const [tracks, setTracks] = useState<ArtistTrack[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [limit, setLimit] = useState(10);
+
+  useEffect(() => {
+    setLoading(true); setError('');
+    fetch(`${API_URL}/admin/magic-import/artist-tracks?artist=${encodeURIComponent(artist)}&limit=50`, {
+      headers: { Authorization: `Bearer ${token}`, 'X-Admin-Token': import.meta.env.VITE_ADMIN_SECRET ?? '' },
+      credentials: 'include',
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (Array.isArray(data)) { setTracks(data); setSelected(new Set(data.slice(0, 10).map((t: ArtistTrack) => t.id))); }
+        else setError('Artista não encontrado no Deezer.');
+      })
+      .catch(() => setError('Erro ao buscar músicas.'))
+      .finally(() => setLoading(false));
+  }, [artist, token]);
+
+  function toggleAll() {
+    if (selected.size === tracks.slice(0, limit).length) setSelected(new Set());
+    else setSelected(new Set(tracks.slice(0, limit).map(t => t.id)));
   }
 
-  const canRun = mode === 'pending' ? true : mode === 'url' ? !!spotifyUrl.trim() : (!!artist.trim() && !!album.trim());
+  function toggle(id: string) {
+    setSelected(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
+  }
+
+  function handleConfirm() {
+    const chosen = tracks.filter(t => selected.has(t.id));
+    if (!chosen.length) return;
+    onConfirm(chosen, `job-${Date.now()}`);
+  }
+
+  const fmt = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 400 }}
-      onClick={e => !loading && e.target === e.currentTarget && onClose()}>
-      <div style={{ background: '#1a1a1a', borderRadius: 16, padding: 32, width: '100%', maxWidth: 560, maxHeight: '90vh', overflowY: 'auto', border: '1px solid #7c3aed', display: 'flex', flexDirection: 'column', gap: 20 }}>
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <h3 style={{ color: '#fff', fontSize: 20, fontWeight: 800, margin: 0 }}>Magic Import</h3>
-            <p style={{ color: '#9ca3af', fontSize: 13, margin: '4px 0 0' }}>Busca metadados, baixa do YouTube e envia para o <strong>Supabase Storage</strong>.</p>
-          </div>
-          {!loading && <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#9ca3af', fontSize: 22, cursor: 'pointer' }}>x</button>}
+    <div className="adm-modal-overlay" style={{ zIndex: 1100 }} onClick={onClose}>
+      <div className="adm-modal adm-modal--artist-picker" onClick={e => e.stopPropagation()} style={{ maxWidth: 560, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="adm-magic-header">
+          <span className="adm-magic-title">🎤 {artist}</span>
+          <button className="adm-modal-close" onClick={onClose}>✕</button>
         </div>
-
-        <div style={{ display: 'flex', gap: 4, background: '#111', borderRadius: 8, padding: 4 }}>
-          <button onClick={() => setMode('album')} style={{ flex: 1, padding: '8px 4px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700, background: mode === 'album' ? '#7c3aed' : 'transparent', color: mode === 'album' ? '#fff' : '#9ca3af' }}>Artista + Album</button>
-          <button onClick={() => setMode('url')} style={{ flex: 1, padding: '8px 4px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700, background: mode === 'url' ? '#1db954' : 'transparent', color: mode === 'url' ? '#fff' : '#9ca3af' }}>Link do Spotify</button>
-          <button onClick={() => setMode('pending')} style={{ flex: 1, padding: '8px 4px', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700, background: mode === 'pending' ? '#f59e0b' : 'transparent', color: mode === 'pending' ? '#000' : '#9ca3af' }}>Em Breve</button>
+        <div style={{ padding: '8px 20px', borderBottom: '1px solid #313244', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <label style={{ color: '#a6adc8', fontSize: 13 }}>Mostrar top</label>
+          <input type="number" value={limit} min={1} max={50} onChange={e => setLimit(Math.min(50, Math.max(1, Number(e.target.value))))} style={{ width: 60, background: '#313244', border: 'none', borderRadius: 6, color: '#cdd6f4', padding: '4px 8px', fontSize: 13 }} />
+          <label style={{ color: '#a6adc8', fontSize: 13 }}>músicas</label>
+          <button onClick={toggleAll} style={{ marginLeft: 'auto', background: 'none', border: '1px solid #45475a', borderRadius: 6, color: '#a6adc8', padding: '4px 10px', cursor: 'pointer', fontSize: 12 }}>
+            {selected.size === tracks.slice(0, limit).length ? 'Desmarcar todos' : 'Selecionar todos'}
+          </button>
         </div>
-
-        {!result && (
-          <>
-            {mode === 'album' && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div className="admin-form-group">
-                  <label className="admin-label">Artista</label>
-                  <input className="admin-input" placeholder="Ex: Eminem" value={artist} onChange={e => setArtist(e.target.value)} disabled={loading} />
-                </div>
-                <div className="admin-form-group">
-                  <label className="admin-label">Album</label>
-                  <input className="admin-input" placeholder="Ex: The Marshall Mathers LP" value={album} onChange={e => setAlbum(e.target.value)} disabled={loading} onKeyDown={e => e.key === 'Enter' && run()} />
-                </div>
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          {loading && <div style={{ padding: 24, textAlign: 'center', color: '#a6adc8' }}>🔍 Buscando músicas...</div>}
+          {error && <div style={{ padding: 24, textAlign: 'center', color: '#f38ba8' }}>{error}</div>}
+          {!loading && !error && tracks.slice(0, limit).map((t, i) => (
+            <div key={t.id} onClick={() => toggle(t.id)} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px', cursor: 'pointer', background: selected.has(t.id) ? 'rgba(124,58,237,0.15)' : 'transparent', borderBottom: '1px solid #1e1e2e', transition: 'background 0.15s' }}>
+              <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggle(t.id)} onClick={e => e.stopPropagation()} style={{ accentColor: '#7c3aed', width: 16, height: 16, cursor: 'pointer' }} />
+              {t.coverUrl && <img src={t.coverUrl} alt="" style={{ width: 40, height: 40, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }} />}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: '#cdd6f4', fontSize: 14, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{i + 1}. {t.title}</div>
+                <div style={{ color: '#6c7086', fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.album}</div>
               </div>
-            )}
-            {mode === 'url' && (
-              <div className="admin-form-group">
-                <label className="admin-label">Link do Spotify</label>
-                <input className="admin-input" placeholder="https://open.spotify.com/album/..." value={spotifyUrl} onChange={e => setSpotifyUrl(e.target.value)} disabled={loading} onKeyDown={e => e.key === 'Enter' && run()} />
-                <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>Suporta: faixa, album, playlist, artista do Spotify e Deezer</div>
-              </div>
-            )}
-            {mode === 'pending' && (
-              <div style={{ background: '#111', borderRadius: 8, padding: 16 }}>
-                <div style={{ fontSize: 14, color: '#fff', fontWeight: 700, marginBottom: 8 }}>Importar faixas Em Breve</div>
-                <div style={{ fontSize: 13, color: '#9ca3af', lineHeight: 1.5 }}>
-                  Busca todas as musicas marcadas como <strong style={{ color: '#f59e0b' }}>Em Breve</strong> e tenta baixar o audio automaticamente.
-                  Agrupa por album quando possivel para importar de uma vez.
-                </div>
-                <div style={{ fontSize: 11, color: '#6b7280', marginTop: 8 }}>Pode demorar bastante dependendo da quantidade de faixas pendentes.</div>
-              </div>
-            )}
-            {mode !== 'pending' && (
-              <div className="admin-form-group">
-                <label className="admin-label">Limite de faixas</label>
-                <select className="admin-select" value={maxTracks} onChange={e => setMaxTracks(Number(e.target.value))} disabled={loading} style={{ width: 120, padding: '10px 8px' }}>
-                  {[5, 10, 15, 20, 30, 50].map(n => <option key={n} value={n}>{n} faixas</option>)}
-                </select>
-              </div>
-            )}
-            {loading && (
-              <div style={{ background: '#111', borderRadius: 8, padding: 16 }}>
-                <div style={{ fontSize: 13, color: '#c4b5fd', marginBottom: 8 }}>
-                  {progress ? `${progress.status === 'downloading' ? 'Baixando' : 'Enviando'}: ${progress.track}` : 'Buscando...'}
-                </div>
-                <div style={{ height: 10, background: '#2a2a2a', borderRadius: 5, overflow: 'hidden' }}>
-                  <div style={{ height: '100%', borderRadius: 5, background: mode === 'pending' ? 'linear-gradient(90deg,#f59e0b,#fcd34d)' : 'linear-gradient(90deg,#7c3aed,#a78bfa)', width: progress ? `${progress.percent}%` : '100%', transition: 'width 0.4s ease', animation: progress ? 'none' : 'pulse 1.5s ease-in-out infinite' }} />
-                </div>
-                {progress && <div style={{ textAlign: 'right', fontSize: 12, color: '#a78bfa', marginTop: 4, fontWeight: 700 }}>{progress.percent}%</div>}
-              </div>
-            )}
-            {mode !== 'pending' && (
-              <div className="admin-info-box" style={{ fontSize: 12 }}>
-                {mode === 'album' ? <>Salvo em: <code>{artist || 'Artista'} / {album || 'Album'}</code> no Supabase</> : <>Albums: audio completo. Playlists/artistas: catalogo.</>}
-                <br />Requer yt-dlp e ffmpeg no servidor.
-              </div>
-            )}
-            {error && <div className="admin-msg admin-msg--error">{error}</div>}
-            <button className="admin-btn admin-btn--primary admin-btn--lg" onClick={run} disabled={loading || !canRun}
-              style={{ background: loading ? '#374151' : mode === 'pending' ? '#f59e0b' : mode === 'url' ? '#1db954' : '#7c3aed', color: mode === 'pending' ? '#000' : '#fff', fontSize: 16, fontWeight: 700 }}>
-              {loading ? 'Importando...' : mode === 'pending' ? 'Importar Faixas Em Breve' : mode === 'url' ? 'Importar do Spotify' : 'Iniciar Magic Import'}
-            </button>
-          </>
-        )}
-
-        {result && (
-          <div>
-            <div className="admin-msg admin-msg--success" style={{ fontSize: 15 }}>
-              {result.imported} importadas / {result.skipped} nao encontradas / {result.errors} erros
-              {result.importType === 'pending' && <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>Faixas importadas foram marcadas como disponiveis.</div>}
+              <span style={{ color: '#6c7086', fontSize: 12, flexShrink: 0 }}>{fmt(t.durationMs)}</span>
             </div>
-            <div className="admin-table-wrap" style={{ marginTop: 16, maxHeight: 300, overflowY: 'auto' }}>
-              <table className="admin-table">
-                <thead><tr><th>#</th><th>Faixa</th><th>Status</th></tr></thead>
-                <tbody>
-                  {result.tracks.map((t: any, i: number) => (
-                    <tr key={i}>
-                      <td className="admin-table__muted">{i + 1}</td>
-                      <td><strong>{t.title}</strong></td>
-                      <td><span style={{ fontSize: 11, color: t.status.includes('error') ? '#ef4444' : t.status.includes('skipped') ? '#f59e0b' : '#1db954' }}>{t.status}</span></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {result.importType === 'pending' && (
-              <button className="admin-btn admin-btn--primary" onClick={() => setResult(null)} style={{ marginTop: 16, width: '100%', background: '#f59e0b', color: '#000' }}>Executar novamente</button>
-            )}
-            <button className="admin-btn admin-btn--ghost" onClick={onClose} style={{ marginTop: 8, width: '100%' }}>Fechar</button>
-          </div>
-        )}
-
+          ))}
+        </div>
+        <div className="adm-modal__actions" style={{ borderTop: '1px solid #313244' }}>
+          <button className="adm-btn adm-magic-btn" onClick={handleConfirm} disabled={selected.size === 0}>
+            ✨ Importar {selected.size} música{selected.size !== 1 ? 's' : ''}
+          </button>
+          <button className="adm-btn adm-btn--ghost" onClick={onClose}>Cancelar</button>
+        </div>
       </div>
     </div>
   );
 }
 
-// â”€â”€ Import â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function Import({ token }: { token: string }) {
-  const [loading, setLoading] = useState<'drive' | 'drive-meta' | 's3' | null>(null);
-  const [result, setResult] = useState<{ created: number; skipped: number; errors?: number; songs?: any[] } | null>(null);
+interface DeezerAlbum { id: string; title: string; coverUrl: string; releaseDate: string; trackCount: number; alreadyImported?: boolean; }
+
+function AlbumPickerModal({ token, artist, onConfirm, onClose }: {
+  token: string; artist: string;
+  onConfirm: (albumIds: string[], jobId: string) => void;
+  onClose: () => void;
+}) {
+  const [albums, setAlbums] = useState<DeezerAlbum[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [s3Prefix, setS3Prefix] = useState('');
-  const [showMagic, setShowMagic] = useState(false);
-  // Playlist import state
-  const [playlistUrl, setPlaylistUrl] = useState('');
-  const [playlistLoading, setPlaylistLoading] = useState(false);
-  const [playlistResult, setPlaylistResult] = useState<{ imported: number; skipped: number; playlistName: string } | null>(null);
-  const [playlistError, setPlaylistError] = useState('');
-  // Spotdl state
-  const [spotdlUrl, setSpotdlUrl] = useState('');
-  const [spotdlRunning, setSpotdlRunning] = useState(false);
-  const [spotdlLines, setSpotdlLines] = useState<{ type: 'info' | 'ok' | 'err'; text: string }[]>([]);
-  const [spotdlResult, setSpotdlResult] = useState<{ imported: number; skipped: number; errors: number } | null>(null);
-  const spotdlLogRef = useRef<HTMLDivElement>(null);
-  // S3 metadata enrich state
-  const [enriching, setEnriching] = useState(false);
-  const [enrichResult, setEnrichResult] = useState<{ enriched: number; notFound: number; total: number } | null>(null);
-  const [enrichError, setEnrichError] = useState('');
 
-  async function run(source: 'drive' | 'drive-meta' | 's3') {
-    setLoading(source); setResult(null); setError('');
-    try {
-      const path = source === 'drive' ? '/admin/import/drive'
-        : source === 'drive-meta' ? '/admin/import/drive/metadata'
-        : '/admin/import/s3';
-      const data = await api(path, token, {
-        method: 'POST',
-        body: JSON.stringify(source === 's3' ? { prefix: s3Prefix } : {}),
-      });
-      setResult(data);
-    } catch (e: any) { setError(e.message); }
-    finally { setLoading(null); }
+  useEffect(() => {
+    setLoading(true); setError('');
+    apiFetch(`/admin/magic-import/artist-albums?artist=${encodeURIComponent(artist)}`, token)
+      .then(data => {
+        if (Array.isArray(data)) {
+          setAlbums(data);
+          // Pré-seleciona apenas os que ainda não foram importados
+          setSelected(new Set(data.filter((a: DeezerAlbum) => !a.alreadyImported).map((a: DeezerAlbum) => a.id)));
+        } else setError('Artista não encontrado no Deezer.');
+      })
+      .catch(() => setError('Erro ao buscar álbuns.'))
+      .finally(() => setLoading(false));
+  }, [artist, token]);
+
+  function toggleAll() {
+    setSelected(selected.size === albums.length ? new Set() : new Set(albums.map(a => a.id)));
   }
 
-  async function importPlaylist() {
-    if (!playlistUrl.trim()) return;
-    setPlaylistLoading(true); setPlaylistResult(null); setPlaylistError('');
-    try {
-      const data = await api('/admin/spotify/import-playlist', token, {
-        method: 'POST',
-        body: JSON.stringify({ url: playlistUrl.trim() }),
-      });
-      setPlaylistResult(data);
-    } catch (e: any) { setPlaylistError(e.message); }
-    finally { setPlaylistLoading(false); }
+  function toggle(id: string) {
+    setSelected(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
   }
 
-  function addSpotdlLine(type: 'info' | 'ok' | 'err', text: string) {
-    setSpotdlLines(l => [...l, { type, text }]);
-    setTimeout(() => spotdlLogRef.current?.scrollTo({ top: 99999, behavior: 'smooth' }), 50);
-  }
-
-  async function runSpotdl() {
-    if (!spotdlUrl.trim() || spotdlRunning) return;
-    setSpotdlRunning(true); setSpotdlLines([]); setSpotdlResult(null);
-    addSpotdlLine('info', `ðŸ”— Iniciando download: ${spotdlUrl.trim()}`);
-    try {
-      const res = await fetch(`${API}/admin/spotdl/download`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ url: spotdlUrl.trim() }),
-      });
-      if (!res.ok || !res.body) {
-        const err = await res.json().catch(() => ({ message: 'Erro desconhecido' }));
-        addSpotdlLine('err', `âŒ ${err.message}`);
-        setSpotdlRunning(false); return;
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const parts = buf.split('\n\n');
-        buf = parts.pop() ?? '';
-        for (const part of parts) {
-          const line = part.replace(/^data: /, '').trim();
-          if (!line) continue;
-          try {
-            const data = JSON.parse(line);
-            if (data.status === 'downloading') addSpotdlLine('info', `â¬‡ï¸ [${data.current}/${data.total || '?'}] ${data.track ?? ''}`);
-            else if (data.status === 'processing') addSpotdlLine('info', `ðŸ”„ Convertendo: ${data.track ?? ''}`);
-            else if (data.status === 'uploading') addSpotdlLine('info', `â˜ï¸ Enviando [${data.current}/${data.total}]: ${data.track ?? ''}`);
-            else if (data.status === 'done') { setSpotdlResult({ imported: data.imported ?? 0, skipped: data.skipped ?? 0, errors: data.errors ?? 0 }); addSpotdlLine('ok', `âœ… ConcluÃ­do â€” ${data.imported} importadas, ${data.skipped} jÃ¡ existiam, ${data.errors} erros`); }
-            else if (data.status === 'error') addSpotdlLine('err', `âŒ ${data.error}`);
-          } catch (_) {}
-        }
-      }
-    } catch (e: any) { addSpotdlLine('err', `âŒ ${e.message}`); }
-    finally { setSpotdlRunning(false); }
-  }
-
-  const needsReauth = error.includes('re-authenticate') || error.includes('not connected');
-
-  async function enrichS3(all = false) {
-    setEnriching(true); setEnrichResult(null); setEnrichError('');
-    try {
-      const data = await api(`/admin/import/s3/enrich${all ? '?all=true' : ''}`, token, { method: 'POST' });
-      setEnrichResult(data);
-    } catch (e: any) { setEnrichError(e.message); }
-    finally { setEnriching(false); }
-  }
+  const totalTracks = albums.filter(a => selected.has(a.id)).reduce((sum, a) => sum + a.trackCount, 0);
 
   return (
-    <div>
-      <h2 className="admin-section-title">Importar MÃºsicas</h2>
-      <p className="admin-text-muted">Importe mÃºsicas jÃ¡ armazenadas no S3/Supabase para o banco de dados.</p>
-
-      {/* Magic Import CTA */}
-      <div style={{
-        background: 'linear-gradient(135deg, #1e0a3c 0%, #2d1b69 100%)',
-        border: '1px solid #7c3aed', borderRadius: 12, padding: '20px 24px',
-        marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
-      }}>
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 800, color: '#fff' }}>âœ¨ Magic Import</div>
-          <div style={{ fontSize: 13, color: '#c4b5fd', marginTop: 4 }}>
-            Digite artista + Ã¡lbum e o sistema busca metadados, baixa do YouTube e envia direto para o <strong>Supabase Storage</strong> automaticamente.
-          </div>
+    <div className="adm-modal-overlay" style={{ zIndex: 1100 }} onClick={onClose}>
+      <div className="adm-modal adm-modal--artist-picker" onClick={e => e.stopPropagation()} style={{ maxWidth: 600, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="adm-magic-header">
+          <span className="adm-magic-title">💿 Álbuns de {artist}</span>
+          <button className="adm-modal-close" onClick={onClose}>✕</button>
         </div>
-        <button
-          className="admin-btn admin-btn--primary"
-          onClick={() => setShowMagic(true)}
-          style={{ background: '#7c3aed', whiteSpace: 'nowrap', fontWeight: 700, fontSize: 14, padding: '10px 20px' }}
-        >
-          âœ¨ Magic Import
-        </button>
+        <div style={{ padding: '8px 20px', borderBottom: '1px solid #313244', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ color: '#a6adc8', fontSize: 13 }}>{albums.length} álbuns encontrados</span>
+          {albums.some(a => a.alreadyImported) && (
+            <span style={{ color: '#6c7086', fontSize: 12 }}>· {albums.filter(a => a.alreadyImported).length} já importados</span>
+          )}
+          <button onClick={toggleAll} style={{ marginLeft: 'auto', background: 'none', border: '1px solid #45475a', borderRadius: 6, color: '#a6adc8', padding: '4px 10px', cursor: 'pointer', fontSize: 12 }}>
+            {selected.size === albums.length ? 'Desmarcar todos' : 'Selecionar todos'}
+          </button>
+        </div>
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          {loading && <div style={{ padding: 24, textAlign: 'center', color: '#a6adc8' }}>🔍 Buscando álbuns...</div>}
+          {error && <div style={{ padding: 24, textAlign: 'center', color: '#f38ba8' }}>{error}</div>}
+          {!loading && !error && albums.map(a => (
+            <div key={a.id} onClick={() => toggle(a.id)}
+              style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px', cursor: 'pointer', background: selected.has(a.id) ? 'rgba(124,58,237,0.15)' : 'transparent', borderBottom: '1px solid #1e1e2e', transition: 'background 0.15s', opacity: a.alreadyImported ? 0.5 : 1 }}>
+              <input type="checkbox" checked={selected.has(a.id)} onChange={() => toggle(a.id)} onClick={e => e.stopPropagation()} style={{ accentColor: '#7c3aed', width: 16, height: 16, cursor: 'pointer' }} />
+              {a.coverUrl && <img src={a.coverUrl} alt="" style={{ width: 48, height: 48, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }} />}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ color: '#cdd6f4', fontSize: 14, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.title}</span>
+                  {a.alreadyImported && <span style={{ fontSize: 10, background: 'rgba(29,185,84,0.2)', color: '#1db954', borderRadius: 4, padding: '1px 6px', flexShrink: 0 }}>✓ importado</span>}
+                </div>
+                <div style={{ color: '#6c7086', fontSize: 12, display: 'flex', gap: 8 }}>
+                  <span>{a.releaseDate?.slice(0, 4)}</span>
+                  <span style={{ color: '#a6adc8', fontWeight: 600 }}>{a.trackCount} faixas</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="adm-modal__actions" style={{ borderTop: '1px solid #313244' }}>
+          <button className="adm-btn adm-magic-btn" onClick={() => onConfirm([...selected], `job-${Date.now()}`)} disabled={selected.size === 0}>
+            ✨ Importar {selected.size} álbum{selected.size !== 1 ? 'ns' : ''} (~{totalTracks} faixas)
+          </button>
+          <button className="adm-btn adm-btn--ghost" onClick={onClose}>Cancelar</button>
+        </div>
       </div>
+    </div>
+  );
+}
 
+function MagicImportModal({ token, onClose }: { token: string; onClose: () => void }) {
+  const [mode, setMode] = useState<MagicMode>('album_artist');
+  const [artist, setArtist] = useState('');
+  const [album, setAlbum] = useState('');
+  const [trackQuery, setTrackQuery] = useState('');
+  const [playlistId, setPlaylistId] = useState('');
+  const [artistOnly, setArtistOnly] = useState('');
+  const [showArtistPicker, setShowArtistPicker] = useState(false);
+  const [showAlbumPicker, setShowAlbumPicker] = useState(false);
+  const [maxTracks, setMaxTracks] = useState(100);
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState('');
+  const [log, setLog] = useState<string[]>([]);
+  const [totalTracks, setTotalTracks] = useState(0);
+  const [currentTrack, setCurrentTrack] = useState(0);
+
+  const addLog = (msg: string) => setLog(l => [...l, msg]);
+
+  async function handleArtistImport(tracks: ArtistTrack[], jobId: string) {
+    setShowArtistPicker(false);
+    setLoading(true); setProgress(0); setLog([]); setStatus('Iniciando...');
+    try {
+      const res = await fetch(`${API_URL}/admin/magic-import/artist-tracks`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Admin-Token': import.meta.env.VITE_ADMIN_SECRET ?? '' },
+        credentials: 'include',
+        body: JSON.stringify({ tracks, jobId }),
+      });
+      const data = await res.json();
+      addLog(JSON.stringify(data, null, 2));
+      setStatus(`✅ Concluído! ${data.imported ?? '?'} músicas importadas.`);
+      setProgress(100);
+    } catch (e: any) {
+      setStatus(`❌ Erro: ${e.message}`); addLog(`Erro: ${e.message}`);
+    } finally { setLoading(false); }
+  }
+
+  async function handleAlbumImport(albumIds: string[], jobId: string) {
+    setShowAlbumPicker(false);
+    setLoading(true); setProgress(0); setLog([]); setStatus('Buscando faixas dos álbuns...');
+    try {
+      const data = await apiFetch('/admin/magic-import/artist-albums', token, {
+        method: 'POST',
+        body: JSON.stringify({ artist: artistOnly, albumIds, jobId }),
+      });
+      addLog(JSON.stringify(data, null, 2));
+      setStatus(`✅ Concluído! ${data.imported ?? '?'} músicas importadas.`);
+      setProgress(100);
+    } catch (e: any) {
+      setStatus(`❌ Erro: ${e.message}`); addLog(`Erro: ${e.message}`);
+    } finally { setLoading(false); }
+  }
+
+  async function handleImport() {
+    setLoading(true); setProgress(0); setLog([]); setStatus('Iniciando...'); setTotalTracks(0); setCurrentTrack(0);
+    const body: Record<string, any> = { mode, maxTracks: Math.min(maxTracks, 100) };
+    if (mode === 'album_artist') { body.artist = artist; body.album = album; }
+    if (mode === 'track')        { body.artist = artist; body.trackQuery = trackQuery; }
+    if (mode === 'album_only')   { body.album = album; }
+    if (mode === 'playlist')     { body.playlistId = playlistId; }
+    try {
+      const res = await fetch(`${API_URL}/admin/magic-import`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.headers.get('content-type')?.includes('text/event-stream')) {
+        const reader = res.body!.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n'); buf = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue;
+            try {
+              const ev = JSON.parse(line.slice(5).trim());
+              if (ev.totalTracks) setTotalTracks(ev.totalTracks);
+              if (ev.trackIndex !== undefined) setCurrentTrack(ev.trackIndex + 1);
+              if (ev.status)   setStatus(ev.status);
+              if (ev.log)      addLog(ev.log);
+              if (ev.progress) setProgress(ev.progress);
+            } catch {}
+          }
+        }
+        setStatus('✅ Importação concluída!'); setProgress(100);
+      } else {
+        const data = await res.json();
+        addLog(JSON.stringify(data, null, 2));
+        setStatus(`✅ Concluído! ${data.imported ?? data.count ?? '?'} músicas importadas.`);
+        setProgress(100);
+      }
+    } catch (e: any) {
+      setStatus(`❌ Erro: ${e.message}`); addLog(`Erro: ${e.message}`);
+    } finally { setLoading(false); }
+  }
+
+  const modes: { id: MagicMode; label: string }[] = [
+    { id: 'album_artist', label: '🎤 Artista + Álbum' },
+    { id: 'track',        label: '🎵 Música (single)' },
+    { id: 'album_only',   label: '💿 Álbum' },
+    { id: 'playlist',     label: '🎧 Playlist Deezer' },
+    { id: 'artist',       label: '🎤 Por Artista' },
+    { id: 'all_albums',   label: '💿 Todos os Álbuns' },
+  ];
+
+  return (
+    <div className="adm-modal-overlay" onClick={onClose}>
+      <div className="adm-modal adm-modal--magic" onClick={e => e.stopPropagation()}>
+        <div className="adm-magic-header">
+          <span className="adm-magic-title">✨ Magic Import</span>
+          <button className="adm-modal-close" onClick={onClose}>✕</button>
+        </div>
+        <p className="adm-magic-sub">Busca no Deezer · Download via YouTube · Tags automáticas</p>
+        <div className="adm-magic-tabs">
+          {modes.map(m => (
+            <button key={m.id} className={`adm-magic-tab${mode === m.id ? ' adm-magic-tab--active' : ''}`} onClick={() => setMode(m.id)} disabled={loading}>{m.label}</button>
+          ))}
+        </div>
+        <div className="adm-magic-fields">
+          {(mode === 'album_artist' || mode === 'track') && (
+            <div className="adm-form-row"><label>Artista</label><input value={artist} onChange={e => setArtist(e.target.value)} placeholder="Ex: Linkin Park" disabled={loading} /></div>
+          )}
+          {(mode === 'album_artist' || mode === 'album_only') && (
+            <div className="adm-form-row"><label>Álbum</label><input value={album} onChange={e => setAlbum(e.target.value)} placeholder="Ex: Meteora" disabled={loading} /></div>
+          )}
+          {mode === 'track' && (
+            <div className="adm-form-row"><label>Nome da música</label><input value={trackQuery} onChange={e => setTrackQuery(e.target.value)} placeholder="Ex: In The End" disabled={loading} /></div>
+          )}
+          {mode === 'playlist' && (
+            <div className="adm-form-row"><label>URL ou ID da playlist</label><input value={playlistId} onChange={e => setPlaylistId(e.target.value)} placeholder="https://www.deezer.com/playlist/..." disabled={loading} /></div>
+          )}
+          {mode === 'artist' && (
+            <div className="adm-form-row">
+              <label>Nome do artista</label>
+              <input value={artistOnly} onChange={e => setArtistOnly(e.target.value)} placeholder="Ex: Eminem" disabled={loading} onKeyDown={e => e.key === 'Enter' && artistOnly.trim() && setShowArtistPicker(true)} />
+              <button className="adm-btn adm-btn--primary" style={{ marginLeft: 8, padding: '6px 14px', fontSize: 13 }} onClick={() => artistOnly.trim() && setShowArtistPicker(true)} disabled={loading || !artistOnly.trim()}>Buscar</button>
+            </div>
+          )}
+          {mode === 'all_albums' && (
+            <div className="adm-form-row">
+              <label>Nome do artista</label>
+              <input value={artistOnly} onChange={e => setArtistOnly(e.target.value)} placeholder="Ex: Linkin Park" disabled={loading} onKeyDown={e => e.key === 'Enter' && artistOnly.trim() && setShowAlbumPicker(true)} />
+              <button className="adm-btn adm-btn--primary" style={{ marginLeft: 8, padding: '6px 14px', fontSize: 13 }} onClick={() => artistOnly.trim() && setShowAlbumPicker(true)} disabled={loading || !artistOnly.trim()}>Ver Álbuns</button>
+            </div>
+          )}
+          {mode !== 'artist' && mode !== 'all_albums' && (
+            <div className="adm-form-row">
+              <label>Limite máximo de faixas (máx 100)</label>
+              <input type="number" value={maxTracks} min={1} max={100} onChange={e => setMaxTracks(Math.min(100, Math.max(1, Number(e.target.value))))} disabled={loading} style={{ width: 80 }} />
+            </div>
+          )}
+        </div>
+        {(loading || progress > 0) && (
+          <div className="adm-magic-progress">
+            <div className="adm-magic-status">
+              {status}
+              {totalTracks > 0 && currentTrack > 0 && (
+                <span style={{ marginLeft: 12, color: '#a6adc8', fontSize: 12 }}>
+                  ({currentTrack} de {totalTracks} {totalTracks === 1 ? 'música' : 'músicas'})
+                </span>
+              )}
+            </div>
+            <div className="adm-magic-bar-wrap"><div className="adm-magic-bar" style={{ width: `${progress}%` }} /></div>
+          </div>
+        )}
+        {log.length > 0 && <pre className="adm-log">{log.join('\n')}</pre>}
+        <div className="adm-modal__actions">
+          {mode !== 'artist' && mode !== 'all_albums' && <button className="adm-btn adm-magic-btn" onClick={handleImport} disabled={loading}>{loading ? '⏳ Importando...' : '✨ Importar'}</button>}
+          <button className="adm-btn adm-btn--ghost" onClick={onClose} disabled={loading}>Fechar</button>
+        </div>
+      </div>
+      {showArtistPicker && (
+        <ArtistPickerModal
+          token={token}
+          artist={artistOnly}
+          onConfirm={handleArtistImport}
+          onClose={() => setShowArtistPicker(false)}
+        />
+      )}
+      {showAlbumPicker && (
+        <AlbumPickerModal
+          token={token}
+          artist={artistOnly}
+          onConfirm={handleAlbumImport}
+          onClose={() => setShowAlbumPicker(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Import Page ───────────────────────────────────────────────────────────────
+function ImportPage({ token }: { token: string }) {
+  const [url, setUrl] = useState('');
+  const [maxTracks, setMaxTracks] = useState(20);
+  const [log, setLog] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState('');
+  const [showMagic, setShowMagic] = useState(false);
+
+  async function importByUrl() {
+    if (!url.trim()) return;
+    setLoading(true); setLog(['Iniciando importação...']);
+    try {
+      const data = await apiFetch('/admin/magic-import/url', token, {
+        method: 'POST',
+        body: JSON.stringify({ url: url.trim(), maxTracks, jobId: `job-${Date.now()}` }),
+      });
+      setLog(l => [...l, JSON.stringify(data, null, 2)]);
+    } catch (e: any) { setLog(l => [...l, `Erro: ${e.message}`]); }
+    finally { setLoading(false); }
+  }
+
+  async function uploadSong() {
+    if (!uploadFile) return;
+    setUploadProgress('Enviando...');
+    const form = new FormData();
+    form.append('file', uploadFile); form.append('storageType', 's3');
+    try {
+      const tok = (token && token !== 'authenticated') ? token : (sessionStorage.getItem('_om_access') ?? token);
+      const res = await fetch(`${API_URL}/admin/songs/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tok}`, 'X-Admin-Token': import.meta.env.VITE_ADMIN_SECRET ?? '', ...EXTRA_HEADERS },
+        body: form,
+      });
+      const data = await res.json();
+      setUploadProgress(data.song_id ? `Enviado! ID: ${data.song_id}` : JSON.stringify(data));
+      setUploadFile(null);
+      // Disparar evento para atualizar lista de músicas sem recarregar
+      window.dispatchEvent(new CustomEvent('songUploaded', { detail: data }));
+    } catch (e: any) { setUploadProgress(`Erro: ${e.message}`); }
+  }
+
+  async function enrichSpotify() { setLog(['Enriquecendo metadados com Spotify...']); const r = await apiFetch('/admin/spotify/enrich', token, { method: 'POST' }); setLog(l => [...l, JSON.stringify(r)]); }
+  async function enrichCovers()  { setLog(['Enriquecendo capas...']); const r = await apiFetch('/admin/spotify/enrich-covers', token, { method: 'POST' }); setLog(l => [...l, JSON.stringify(r)]); }
+  async function enrichGenres()  { setLog(['Enriquecendo gêneros...']); const r = await apiFetch('/admin/spotify/enrich-genres', token, { method: 'POST' }); setLog(l => [...l, JSON.stringify(r)]); }
+  async function enrichLyrics()  { setLog(['Buscando letras...']); const r = await apiFetch('/admin/spotify/enrich-lyrics', token, { method: 'POST' }); setLog(l => [...l, JSON.stringify(r)]); }
+  async function enrichVideos()  { setLog(['Buscando vídeos clipes...']); const r = await apiFetch('/admin/spotify/enrich-videos', token, { method: 'POST' }); setLog(l => [...l, JSON.stringify(r)]); }
+
+  return (
+    <div className="adm-page">
+      <h1 className="adm-page__title">Importar Músicas</h1>
+      <div className="adm-magic-card">
+        <div className="adm-magic-card__left">
+          <div className="adm-magic-card__title">✨ Magic Import</div>
+          <div className="adm-magic-card__desc">Busca automática no Deezer · Download via YouTube com ISRC · Tags ID3 completas · Capa iTunes · Letras Genius</div>
+        </div>
+        <button className="adm-btn adm-magic-btn" onClick={() => setShowMagic(true)}>✨ Magic Import</button>
+      </div>
+      <div className="adm-import-grid">
+        <div className="adm-card">
+          <div className="adm-card__title">Importar por URL (Spotify / Deezer)</div>
+          <div className="adm-form-row"><label>URL</label><input placeholder="https://open.spotify.com/album/..." value={url} onChange={e => setUrl(e.target.value)} /></div>
+          <div className="adm-form-row"><label>Máx. faixas</label><input type="number" value={maxTracks} onChange={e => setMaxTracks(Number(e.target.value))} min={1} max={500} /></div>
+          <button className="adm-btn adm-btn--primary" onClick={importByUrl} disabled={loading}>{loading ? 'Importando...' : 'Importar'}</button>
+          {log.length > 0 && <pre className="adm-log">{log.join('\n')}</pre>}
+        </div>
+        <div className="adm-card">
+          <div className="adm-card__title">Upload de Arquivo</div>
+          <div className="adm-form-row"><label>Arquivo MP3/FLAC</label><input type="file" accept="audio/*" onChange={e => setUploadFile(e.target.files?.[0] ?? null)} /></div>
+          <button className="adm-btn adm-btn--primary" onClick={uploadSong} disabled={!uploadFile}>Enviar</button>
+          {uploadProgress && <div className="adm-log">{uploadProgress}</div>}
+        </div>
+        <div className="adm-card">
+          <div className="adm-card__title">Enriquecimento de Metadados</div>
+          <div className="adm-enrich-btns">
+            <button className="adm-btn adm-btn--primary adm-enrich-btn" onClick={enrichSpotify}>🎵 Spotify (info completa)</button>
+            <button className="adm-btn adm-btn--primary adm-enrich-btn" onClick={enrichCovers}>🖼️ Capas</button>
+            <button className="adm-btn adm-btn--primary adm-enrich-btn" onClick={enrichGenres}>🎸 Gêneros</button>
+            <button className="adm-btn adm-btn--primary adm-enrich-btn" onClick={enrichLyrics}>📝 Letras</button>
+            <button className="adm-btn adm-btn--primary adm-enrich-btn adm-enrich-btn--video" onClick={enrichVideos}>▶ Vídeos Clipes</button>
+          </div>
+          {log.length > 0 && <pre className="adm-log">{log.join('\n')}</pre>}
+        </div>
+      </div>
       {showMagic && <MagicImportModal token={token} onClose={() => setShowMagic(false)} />}
+    </div>
+  );
+}
 
-      <div className="admin-import-cards" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }}>
-        <div className="admin-import-card">
-          <div className="admin-import-card__icon">âš¡</div>
-          <h3>Drive â€” RÃ¡pido</h3>
-          <p>Importa os caminhos sem baixar os arquivos. TÃ­tulo extraÃ­do do nome do arquivo.</p>
-          {needsReauth ? (
-            <a className="admin-btn admin-btn--primary" href={`${API}/auth/google`}
-              style={{ textDecoration: 'none', textAlign: 'center' }}>ðŸ”— Conectar Drive</a>
-          ) : (
-            <button className="admin-btn admin-btn--primary" onClick={() => run('drive')} disabled={!!loading}>
-              {loading === 'drive' ? 'â³ Importando...' : 'âš¡ Importar (rÃ¡pido)'}
-            </button>
-          )}
-        </div>
+// ── Activity Page ─────────────────────────────────────────────────────────────
+function ActivityPage({ token }: { token: string }) {
+  const [users, setUsers] = useState<any[]>([]);
+  const [selected, setSelected] = useState<any | null>(null);
+  const [logs, setLogs] = useState<any[]>([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
 
-        <div className="admin-import-card" style={{ borderColor: '#1db954', border: '1px solid #1db954' }}>
-          <div className="admin-import-card__icon">ðŸŽµ</div>
-          <h3>Drive â€” Com Metadados</h3>
-          <p>Baixa cada arquivo e extrai <strong>tÃ­tulo, artista, Ã¡lbum, duraÃ§Ã£o e bitrate</strong> dos tags ID3/Vorbis.</p>
-          {needsReauth ? (
-            <a className="admin-btn admin-btn--primary" href={`${API}/auth/google`}
-              style={{ textDecoration: 'none', textAlign: 'center' }}>ðŸ”— Conectar Drive</a>
-          ) : (
-            <button className="admin-btn admin-btn--primary" onClick={() => run('drive-meta')} disabled={!!loading}>
-              {loading === 'drive-meta' ? 'â³ Extraindo metadados...' : 'ðŸŽµ Importar com Metadados'}
-            </button>
-          )}
-          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
-            âš ï¸ Mais lento â€” baixa cada arquivo para ler os tags
-          </div>
-        </div>
+  useEffect(() => {
+    apiFetch('/admin/activity/users', token).then(d => setUsers(Array.isArray(d) ? d : []));
+  }, [token]);
 
-        <div className="admin-import-card">
-          <div className="admin-import-card__icon">â˜ï¸</div>
-          <h3>AWS S3</h3>
-          <div className="admin-form-group">
-            <label className="admin-label">Prefixo (opcional)</label>
-            <input className="admin-input" placeholder="ex: songs/" value={s3Prefix} onChange={e => setS3Prefix(e.target.value)} />
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="admin-btn admin-btn--primary" onClick={() => run('s3')} disabled={!!loading} style={{ flex: 1 }}>
-              {loading === 's3' ? 'â³ Importando...' : 'ðŸ“‚ Importar com Prefixo'}
-            </button>
-            <button className="admin-btn admin-btn--ghost" onClick={async () => { setS3Prefix(''); setLoading('s3'); setResult(null); setError(''); try { const data = await api('/admin/import/s3', token, { method: 'POST', body: JSON.stringify({ prefix: '' }) }); setResult(data); } catch (e: any) { setError(e.message); } finally { setLoading(null); } }} disabled={!!loading} style={{ flex: 1 }} title="Importa todos os arquivos do bucket sem filtro de prefixo">
-              {loading === 's3' ? 'â³...' : 'â˜ï¸ Importar Tudo'}
-            </button>
-          </div>
-          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
-            "Importar Tudo" varre o bucket inteiro sem filtro de prefixo
-          </div>
-        </div>
+  async function openUser(u: any) {
+    setSelected(u);
+    setLoadingLogs(true);
+    try {
+      const data = await apiFetch(`/admin/activity/users/${u.id}?limit=200`, token);
+      setLogs(Array.isArray(data) ? data : []);
+    } finally { setLoadingLogs(false); }
+  }
 
-        {/* S3 Metadata Enrich card */}
-        <div className="admin-import-card" style={{ border: '1px solid #f59e0b' }}>
-          <div className="admin-import-card__icon">ðŸ”</div>
-          <h3>Enriquecer Metadados S3</h3>
-          <p>
-            Busca <strong>artista, Ã¡lbum e capa</strong> para mÃºsicas do S3 que estÃ£o sem metadados.
-            Usa o nome do arquivo e a estrutura de pastas para identificar a faixa correta.
-          </p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button
-              className="admin-btn admin-btn--primary"
-              onClick={() => enrichS3(false)}
-              disabled={enriching}
-              style={{ flex: 1, background: '#f59e0b', color: '#000', fontWeight: 700 }}
-              title="Enriquece apenas mÃºsicas sem artista ou sem capa"
-            >
-              {enriching ? 'â³ Buscando...' : 'ðŸ” Enriquecer Faltantes'}
-            </button>
-            <button
-              className="admin-btn admin-btn--ghost"
-              onClick={() => enrichS3(true)}
-              disabled={enriching}
-              style={{ flex: 1 }}
-              title="Re-enriquece todas as mÃºsicas do S3, mesmo as que jÃ¡ tÃªm metadados"
-            >
-              {enriching ? 'â³...' : 'ðŸ”„ Re-enriquecer Todas'}
-            </button>
-          </div>
-          {enrichError && <div className="admin-msg admin-msg--error" style={{ marginTop: 8, fontSize: 12 }}>âŒ {enrichError}</div>}
-          {enrichResult && (
-            <div className="admin-msg admin-msg--success" style={{ marginTop: 8, fontSize: 12 }}>
-              âœ… <strong>{enrichResult.enriched}</strong> enriquecidas Â· <strong>{enrichResult.notFound}</strong> nÃ£o encontradas
-              <span style={{ color: '#6b7280' }}> (de {enrichResult.total} mÃºsicas)</span>
-            </div>
-          )}
-          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
-            Detecta padrÃµes: <code>Artista/Ãlbum/Faixa</code> e <code>Artista - TÃ­tulo</code>
-          </div>
-        </div>
+  const actionLabel: Record<string, string> = {
+    play: '▶ Play', download: '⬇ Download', skip: '⏭ Skip',
+    like: '❤ Curtiu', add_to_playlist: '➕ Playlist',
+  };
+  const actionColor: Record<string, string> = {
+    play: '#4ade80', download: '#60a5fa', skip: '#94a3b8',
+    like: '#f43f5e', add_to_playlist: '#a78bfa',
+  };
 
-        {/* Spotify / Magic Import card */}
-        <div className="admin-import-card" style={{ border: '1px solid #1db954' }}>
-          <div className="admin-import-card__icon">ðŸŽ§</div>
-          <h3>Importar do Spotify</h3>
-          <p>Cole um link do Spotify (faixa, Ã¡lbum, playlist ou artista) para importar com metadados completos.</p>
-          <button
-            className="admin-btn admin-btn--primary"
-            onClick={() => setShowMagic(true)}
-            style={{ background: '#1db954', fontWeight: 700 }}
-          >
-            ðŸ”— Importar por Link
+  if (selected) {
+    return (
+      <div className="adm-page">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+          <button className="adm-btn adm-btn--ghost" onClick={() => { setSelected(null); setLogs([]); }}>
+            ← Voltar
           </button>
-          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
-            Ãlbuns: baixa Ã¡udio completo Â· Playlists/artistas: catÃ¡logo
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {selected.avatarUrl
+              ? <img src={selected.avatarUrl} alt="" style={{ width: 36, height: 36, borderRadius: '50%', objectFit: 'cover' }} />
+              : <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#7c3aed', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, color: '#fff' }}>
+                  {(selected.username ?? selected.name ?? selected.email ?? '?')[0].toUpperCase()}
+                </div>
+            }
+            <div>
+              <div style={{ fontWeight: 700, color: '#f8fafc', fontSize: 15 }}>
+                @{selected.username ?? selected.name ?? selected.email}
+              </div>
+              <div style={{ fontSize: 11, color: '#475569' }}>{selected.email} · {selected.totalLogs} atividade(s)</div>
+            </div>
           </div>
         </div>
 
-        {/* Deezer Playlist card */}
-        <div className="admin-import-card" style={{ border: '1px solid #a855f7' }}>
-          <div className="admin-import-card__icon">ðŸ”—</div>
-          <h3>Playlist por Link</h3>
-          <p>Importa metadados de uma playlist ou Ã¡lbum do <strong>Deezer</strong> como catÃ¡logo.</p>
-          <input
-            className="admin-input"
-            placeholder="https://www.deezer.com/playlist/..."
-            value={playlistUrl}
-            onChange={e => { setPlaylistUrl(e.target.value); setPlaylistResult(null); setPlaylistError(''); }}
-            onKeyDown={e => e.key === 'Enter' && importPlaylist()}
-            style={{ marginBottom: 8 }}
-          />
-          <button
-            className="admin-btn admin-btn--primary"
-            onClick={importPlaylist}
-            disabled={playlistLoading || !playlistUrl.trim()}
-            style={{ background: '#a855f7', fontWeight: 700 }}
-          >
-            {playlistLoading ? 'â³ Importando...' : 'â¬‡ï¸ Importar'}
-          </button>
-          {playlistError && <div className="admin-msg admin-msg--error" style={{ marginTop: 8, fontSize: 12 }}>âŒ {playlistError}</div>}
-          {playlistResult && (
-            <div className="admin-msg admin-msg--success" style={{ marginTop: 8, fontSize: 12 }}>
-              âœ… <strong>{playlistResult.playlistName}</strong><br />
-              {playlistResult.imported} adicionadas Â· {playlistResult.skipped} jÃ¡ existiam
-            </div>
-          )}
-        </div>
-
-        {/* Spotdl card */}
-        <div className="admin-import-card" style={{ border: '1px solid #f59e0b', gridColumn: '1 / -1' }}>
-          <div className="admin-import-card__icon">â¬‡ï¸</div>
-          <h3>Download Direto do Spotify (320kbps)</h3>
-          <p>Cole um link do Spotify. O servidor baixa o Ã¡udio em <strong>320kbps</strong> via spotdl e importa automaticamente.</p>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <input
-              className="admin-input"
-              style={{ flex: 1 }}
-              placeholder="https://open.spotify.com/album/..."
-              value={spotdlUrl}
-              onChange={e => setSpotdlUrl(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && runSpotdl()}
-              disabled={spotdlRunning}
-            />
-            <button
-              className="admin-btn admin-btn--primary"
-              onClick={runSpotdl}
-              disabled={spotdlRunning || !spotdlUrl.trim()}
-              style={{ background: '#f59e0b', color: '#000', fontWeight: 700, minWidth: 120 }}
-            >
-              {spotdlRunning ? 'â³ Baixando...' : 'â¬‡ï¸ Baixar'}
-            </button>
-          </div>
-          {spotdlLines.length > 0 && (
-            <div ref={spotdlLogRef} style={{
-              background: '#0a0a0a', borderRadius: 8, padding: 12, maxHeight: 200,
-              overflowY: 'auto', fontFamily: 'monospace', fontSize: 11,
-              display: 'flex', flexDirection: 'column', gap: 2, border: '1px solid #2a2a2a',
-            }}>
-              {spotdlLines.map((l, i) => (
-                <div key={i} style={{ color: l.type === 'ok' ? '#1db954' : l.type === 'err' ? '#f15e6c' : '#b3b3b3' }}>{l.text}</div>
-              ))}
-              {spotdlRunning && <div style={{ color: '#535353' }}>â–Œ</div>}
-            </div>
-          )}
-          {spotdlResult && (
-            <div style={{ display: 'flex', gap: 20, marginTop: 8 }}>
-              <div style={{ textAlign: 'center' }}><div style={{ fontSize: 22, fontWeight: 900, color: '#1db954' }}>{spotdlResult.imported}</div><div style={{ fontSize: 11, color: '#b3b3b3' }}>importadas</div></div>
-              <div style={{ textAlign: 'center' }}><div style={{ fontSize: 22, fontWeight: 900, color: '#b3b3b3' }}>{spotdlResult.skipped}</div><div style={{ fontSize: 11, color: '#b3b3b3' }}>jÃ¡ existiam</div></div>
-              {spotdlResult.errors > 0 && <div style={{ textAlign: 'center' }}><div style={{ fontSize: 22, fontWeight: 900, color: '#f15e6c' }}>{spotdlResult.errors}</div><div style={{ fontSize: 11, color: '#b3b3b3' }}>erros</div></div>}
-            </div>
-          )}
-          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>âš ï¸ Requer spotdl e ffmpeg instalados no servidor</div>
-        </div>
-
-        <CsvImportCard token={token} />
-      </div>
-
-      {error && <div className="admin-msg admin-msg--error">âŒ {error}</div>}
-
-      {result && (
-        <div>
-          <div className="admin-msg admin-msg--success">
-            âœ… <strong>{result.created}</strong> criadas Â· <strong>{result.skipped}</strong> jÃ¡ existiam
-            {result.errors ? ` Â· ${result.errors} erros` : ''}
-          </div>
-          {result.songs && result.songs.length > 0 && (
-            <div style={{ marginTop: 16 }}>
-              <h3 className="admin-subsection-title">Metadados extraÃ­dos</h3>
-              <div className="admin-table-wrap">
-                <table className="admin-table">
-                  <thead><tr><th>#</th><th>TÃ­tulo</th><th>Artista</th><th>Ãlbum</th><th>DuraÃ§Ã£o</th></tr></thead>
+        <div className="adm-card adm-card--full">
+          {loadingLogs
+            ? <div className="adm-loading">Carregando...</div>
+            : logs.length === 0
+              ? <div className="adm-empty">Nenhuma atividade registrada.</div>
+              : (
+                <table className="adm-table">
+                  <thead>
+                    <tr><th>Ação</th><th>Música</th><th>Artista</th><th>Data/Hora</th></tr>
+                  </thead>
                   <tbody>
-                    {result.songs.map((s: any, i: number) => (
+                    {logs.map((log, i) => (
                       <tr key={i}>
-                        <td className="admin-table__muted">{i + 1}</td>
-                        <td><strong>{s.title}</strong></td>
-                        <td className="admin-table__muted">{s.artist || 'â€”'}</td>
-                        <td className="admin-table__muted">{s.album || 'â€”'}</td>
-                        <td className="admin-table__muted">
-                          {Math.floor(s.duration / 60)}:{String(s.duration % 60).padStart(2, '0')}
+                        <td>
+                          <span style={{
+                            background: `${actionColor[log.action] ?? '#94a3b8'}22`,
+                            color: actionColor[log.action] ?? '#94a3b8',
+                            padding: '2px 10px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                          }}>
+                            {actionLabel[log.action] ?? log.action}
+                          </span>
+                        </td>
+                        <td style={{ fontWeight: 500 }}>{log.song?.title ?? '—'}</td>
+                        <td style={{ color: '#94a3b8' }}>{log.song?.artist ?? '—'}</td>
+                        <td style={{ color: '#64748b', fontSize: 12 }}>
+                          {log.timestamp ? new Date(log.timestamp).toLocaleString('pt-BR', {
+                            day: '2-digit', month: '2-digit', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit', second: '2-digit',
+                          }) : '—'}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              </div>
-            </div>
-          )}
+              )
+          }
         </div>
-      )}
-    </div>
-  );
-}
-
-// â”€â”€ Users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function Users({ token }: { token: string }) {
-  const [users, setUsers] = useState<User[]>([]);
-  const [q, setQ] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [msg, setMsg] = useState('');
-
-  function load(query = '') {
-    setLoading(true);
-    api(`/admin/users${query ? `?q=${encodeURIComponent(query)}` : ''}`, token)
-      .then(setUsers).finally(() => setLoading(false));
-  }
-
-  useEffect(() => { load(); }, [token]);
-
-  async function updatePlan(id: string, plan: string, durationDays?: number) {
-    try {
-      await api(`/admin/users/${id}/plan`, token, { method: 'PUT', body: JSON.stringify({ plan, durationDays }) });
-      setUsers(us => us.map(u => u.id === id ? { ...u, plan, offlineEnabled: plan !== 'free' } : u));
-      setMsg(`âœ… Plano ${plan}${durationDays === -1 ? ' ilimitado' : durationDays ? ` por ${durationDays} dias` : ''} concedido. UsuÃ¡rio foi notificado.`);
-    } catch (e: any) { setMsg(e.message); }
-  }
-
-  async function toggleAdmin(id: string, current: boolean) {
-    try {
-      await api(`/admin/users/${id}/admin`, token, { method: 'PUT', body: JSON.stringify({ isAdmin: !current }) });
-      setUsers(us => us.map(u => u.id === id ? { ...u, isAdmin: !current } : u));
-    } catch (e: any) { setMsg(e.message); }
-  }
-
-  async function del(id: string, email: string) {
-    if (!confirm(`Deletar usuÃ¡rio "${email}"? Esta aÃ§Ã£o Ã© irreversÃ­vel.`)) return;
-    try {
-      await api(`/admin/users/${id}`, token, { method: 'DELETE' });
-      setUsers(us => us.filter(u => u.id !== id));
-      setMsg('UsuÃ¡rio deletado.');
-    } catch (e: any) { setMsg(e.message); }
+      </div>
+    );
   }
 
   return (
-    <div>
-      <h2 className="admin-section-title">UsuÃ¡rios ({users.length})</h2>
-      {msg && <div className="admin-msg">{msg}</div>}
-      <div className="admin-search-row">
-        <input className="admin-input" placeholder="Buscar por email ou nome..." value={q}
-          onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && load(q)} />
-        <button className="admin-btn admin-btn--primary" onClick={() => load(q)}>Buscar</button>
-      </div>
-      {loading ? <div className="admin-loading">Carregando...</div> : (
-        <div className="admin-table-wrap">
-          <table className="admin-table">
-            <thead><tr><th>Email</th><th>Nome</th><th>Plano</th><th>Admin</th><th>Playlists</th><th>Favoritos</th><th>Cadastro</th><th></th></tr></thead>
-            <tbody>
-              {users.map(u => (
-                <tr key={u.id}>
-                  <td><strong>{u.email}</strong></td>
-                  <td className="admin-table__muted">{u.name ?? 'â€”'}</td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                      <select className="admin-select" value={u.plan} onChange={e => {
-                        const val = e.target.value;
-                        if (val === 'free') updatePlan(u.id, 'free');
-                      }}>
-                        <option value="free">free</option>
-                        <option value="premium">premium</option>
-                        <option value="family">family</option>
-                      </select>
-                      <select className="admin-select" style={{ fontSize: 11 }}
-                        defaultValue=""
-                        onChange={e => {
-                          const val = e.target.value;
-                          if (!val) return;
-                          const [plan, days] = val.split(':');
-                          updatePlan(u.id, plan, Number(days));
-                          e.target.value = '';
-                        }}>
-                        <option value="">âš¡ Conceder</option>
-                        <option value="premium:30">Premium 30 dias</option>
-                        <option value="premium:90">Premium 90 dias</option>
-                        <option value="premium:-1">Premium Ilimitado â™¾ï¸</option>
-                        <option value="family:30">Family 30 dias</option>
-                        <option value="family:90">Family 90 dias</option>
-                        <option value="family:-1">Family Ilimitado â™¾ï¸</option>
-                        <option value="free:0">Revogar â†’ Free</option>
-                      </select>
+    <div className="adm-page">
+      <h1 className="adm-page__title">Atividades <span className="adm-badge">{users.length}</span></h1>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
+        {users.length === 0 && <div className="adm-empty">Nenhuma atividade registrada.</div>}
+        {users.map(u => {
+          const last = u.lastActivity;
+          const displayName = u.username ? `@${u.username}` : (u.name ?? u.email);
+          return (
+            <div key={u.id} className="adm-card" style={{ cursor: 'pointer', transition: 'border-color .15s' }}
+              onClick={() => openUser(u)}
+              onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = '#7c3aed'}
+              onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = ''}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                {u.avatarUrl
+                  ? <img src={u.avatarUrl} alt="" style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover' }} />
+                  : <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#7c3aed', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, color: '#fff', fontSize: 16, flexShrink: 0 }}>
+                      {displayName[0].toUpperCase()}
                     </div>
-                  </td>
-                  <td>
-                    <button
-                      className={`admin-toggle${u.isAdmin ? ' admin-toggle--on' : ''}`}
-                      onClick={() => toggleAdmin(u.id, u.isAdmin)}
-                      title={u.isAdmin ? 'Remover admin' : 'Tornar admin'}
-                    >{u.isAdmin ? 'âœ“' : 'â—‹'}</button>
-                  </td>
-                  <td className="admin-table__muted">{u._count.playlists}</td>
-                  <td className="admin-table__muted">{u._count.favorites}</td>
-                  <td className="admin-table__muted">{new Date(u.createdAt).toLocaleDateString('pt-BR')}</td>
-                  <td>
-                    <button className="admin-btn admin-btn--danger admin-btn--sm" onClick={() => del(u.id, u.email)}>ðŸ—‘</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {users.length === 0 && <div className="admin-empty">Nenhum usuÃ¡rio encontrado.</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// â”€â”€ Activity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function Activity({ token }: { token: string }) {
-  const [logs, setLogs] = useState<ActivityLog[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api('/admin/activity?limit=100', token).then(setLogs).finally(() => setLoading(false));
-  }, [token]);
-
-  const ACTION_ICONS: Record<string, string> = {
-    play: 'â–¶ï¸', download: 'â¬‡ï¸', skip: 'â­', like: 'â¤ï¸', add_to_playlist: 'âž•',
-  };
-
-  return (
-    <div>
-      <h2 className="admin-section-title">Log de Atividades</h2>
-      {loading ? <div className="admin-loading">Carregando...</div> : (
-        <div className="admin-table-wrap">
-          <table className="admin-table">
-            <thead><tr><th>AÃ§Ã£o</th><th>UsuÃ¡rio</th><th>MÃºsica</th><th>Quando</th></tr></thead>
-            <tbody>
-              {logs.map(l => (
-                <tr key={l.id}>
-                  <td><span className="admin-action-badge">{ACTION_ICONS[l.action] ?? 'â€¢'} {l.action}</span></td>
-                  <td>{l.user.email}</td>
-                  <td className="admin-table__muted">{l.song?.title ?? 'â€”'}</td>
-                  <td className="admin-table__muted">{new Date(l.timestamp).toLocaleString('pt-BR')}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {logs.length === 0 && <div className="admin-empty">Nenhuma atividade registrada.</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// â”€â”€ Release App â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function ReleaseApp({ token }: { token: string }) {
-  const [mobileFile, setMobileFile] = useState<File | null>(null);
-  const [tvFile, setTvFile] = useState<File | null>(null);
-  const [changelog, setChangelog] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState('');
-  const [version, setVersion] = useState<any>(null);
-  const mobileRef = useRef<HTMLInputElement>(null);
-  const tvRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    api('/app/version', token).then(setVersion).catch(() => {});
-  }, [token]);
-
-  async function release(file: File, type: 'mobile' | 'tv') {
-    setLoading(true); setResult('');
-    const fd = new FormData();
-    fd.append('apk', file);
-    if (changelog.trim()) fd.append('notes', changelog.trim());
-    try {
-      const data = await api(`/app/release/${type}`, token, { method: 'POST', body: fd });
-      setResult(`âœ… ${type === 'mobile' ? 'Mobile' : 'TV'} publicado! VersÃ£o: ${data.version}`);
-      setVersion(data);
-      if (type === 'mobile') setMobileFile(null);
-      else setTvFile(null);
-    } catch (e: any) { setResult(`âŒ ${e.message}`); }
-    finally { setLoading(false); }
-  }
-
-  return (
-    <div>
-      <h2 className="admin-section-title">ðŸ“± Publicar AtualizaÃ§Ã£o do App</h2>
-
-      {/* App info card */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, background: '#1e1e1e', borderRadius: 10, padding: 16, marginBottom: 20, border: '1px solid #2a2a2a' }}>
-        <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#1db954', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="black"><path d="M8 5v14l11-7z"/></svg>
-        </div>
-        <div>
-          <div style={{ color: '#fff', fontSize: 18, fontWeight: 800 }}>OursMusic</div>
-          <div style={{ color: '#9ca3af', fontSize: 12 }}>VersÃ£o atual no servidor: <strong style={{ color: '#1db954' }}>{version?.version ?? 'â€”'}</strong></div>
-          {version?.releasedAt && <div style={{ color: '#6a6a6a', fontSize: 11 }}>Publicado em: {new Date(version.releasedAt).toLocaleString('pt-BR')}</div>}
-          {version?.notes && <div style={{ color: '#b3b3b3', fontSize: 12, marginTop: 4 }}>ðŸ“ {version.notes}</div>}
-        </div>
-      </div>
-
-      {/* Changelog */}
-      <div style={{ marginBottom: 20 }}>
-        <label className="admin-label">ðŸ“ O que hÃ¡ de novo nesta versÃ£o (changelog)</label>
-        <textarea
-          className="admin-input"
-          rows={4}
-          placeholder="â€¢ Novo recurso X&#10;â€¢ CorreÃ§Ã£o de bug Y&#10;â€¢ Melhoria de performance Z"
-          value={changelog}
-          onChange={e => setChangelog(e.target.value)}
-          style={{ width: '100%', resize: 'vertical', marginTop: 6 }}
-        />
-        <div style={{ fontSize: 11, color: '#6a6a6a', marginTop: 4 }}>
-          AparecerÃ¡ para o usuÃ¡rio na primeira abertura apÃ³s instalar a atualizaÃ§Ã£o.
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* Mobile */}
-        <div style={{ background: '#1e1e1e', borderRadius: 10, padding: 20, border: '1px solid #2a2a2a' }}>
-          <h3 style={{ color: '#fff', marginBottom: 12 }}>ðŸ“± APK Mobile</h3>
-          <p style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>
-            Build: <code>--dart-define=DEVICE_TYPE=mobile</code>
-          </p>
-          <input ref={mobileRef} type="file" accept=".apk" hidden onChange={e => setMobileFile(e.target.files?.[0] ?? null)} />
-          <button className="admin-btn admin-btn--ghost" onClick={() => mobileRef.current?.click()} style={{ marginBottom: 10, width: '100%' }}>
-            {mobileFile ? `âœ… ${mobileFile.name}` : 'ðŸ“‚ Selecionar app-mobile.apk'}
-          </button>
-          {mobileFile && (
-            <button className="admin-btn admin-btn--primary" onClick={() => release(mobileFile, 'mobile')} disabled={loading} style={{ width: '100%', background: '#1db954' }}>
-              {loading ? 'â³ Publicando...' : 'ðŸš€ Publicar Mobile'}
-            </button>
-          )}
-        </div>
-
-        {/* TV */}
-        <div style={{ background: '#1e1e1e', borderRadius: 10, padding: 20, border: '1px solid #2a2a2a' }}>
-          <h3 style={{ color: '#fff', marginBottom: 12 }}>ðŸ“º APK TV / TV Box</h3>
-          <p style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>
-            Build: <code>--dart-define=DEVICE_TYPE=tv</code>
-          </p>
-          <input ref={tvRef} type="file" accept=".apk" hidden onChange={e => setTvFile(e.target.files?.[0] ?? null)} />
-          <button className="admin-btn admin-btn--ghost" onClick={() => tvRef.current?.click()} style={{ marginBottom: 10, width: '100%' }}>
-            {tvFile ? `âœ… ${tvFile.name}` : 'ðŸ“‚ Selecionar app-tv.apk'}
-          </button>
-          {tvFile && (
-            <button className="admin-btn admin-btn--primary" onClick={() => release(tvFile, 'tv')} disabled={loading} style={{ width: '100%', background: '#7c3aed' }}>
-              {loading ? 'â³ Publicando...' : 'ðŸš€ Publicar TV'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {result && <div className={`admin-msg${result.startsWith('âŒ') ? ' admin-msg--error' : ' admin-msg--success'}`} style={{ marginTop: 16 }}>{result}</div>}
-
-      <div className="admin-info-box" style={{ marginTop: 20, fontSize: 12 }}>
-        <strong>Comando de build:</strong><br />
-        <code>flutter build apk --release --dart-define=APP_VERSION=1.x.x --dart-define=API_URL=http://192.168.15.3:3000 --dart-define=DEVICE_TYPE=mobile</code>
-      </div>
-    </div>
-  );
-}
-
-// â”€â”€ Play Stats â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function PlayStats({ token }: { token: string }) {
-  const [data, setData] = useState<{ total: number; songs: any[] } | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api('/admin/songs/play-stats', token).then(setData).finally(() => setLoading(false));
-  }, [token]);
-
-  if (loading) return <div className="admin-loading">Carregando...</div>;
-  if (!data) return <div className="admin-empty">Sem dados</div>;
-
-  return (
-    <div>
-      <h2 className="admin-section-title">ðŸ“Š Contadores de Play</h2>
-      <div className="admin-stats-grid" style={{ marginBottom: 24 }}>
-        <div className="admin-stat-card" style={{ borderTop: '3px solid #1db954' }}>
-          <div className="admin-stat-card__icon">â–¶ï¸</div>
-          <div className="admin-stat-card__value">{data.total.toLocaleString()}</div>
-          <div className="admin-stat-card__label">Total de plays</div>
-        </div>
-        <div className="admin-stat-card" style={{ borderTop: '3px solid #3b82f6' }}>
-          <div className="admin-stat-card__icon">ðŸŽµ</div>
-          <div className="admin-stat-card__value">{data.songs.length}</div>
-          <div className="admin-stat-card__label">MÃºsicas tocadas</div>
-        </div>
-      </div>
-
-      <h3 className="admin-subsection-title">Top mÃºsicas por plays</h3>
-      <div className="admin-table-wrap">
-        <table className="admin-table">
-          <thead><tr><th>#</th><th>MÃºsica</th><th>Artista</th><th>Ãlbum</th><th style={{ textAlign: 'right' }}>Plays</th></tr></thead>
-          <tbody>
-            {data.songs.map((s, i) => (
-              <tr key={s.id}>
-                <td className="admin-table__muted">{i + 1}</td>
-                <td>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    {s.coverUrl
-                      ? <img src={s.coverUrl} alt="" width={32} height={32} style={{ borderRadius: 4, objectFit: 'cover' }} />
-                      : <div style={{ width: 32, height: 32, background: '#2a2a2a', borderRadius: 4, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>ðŸŽµ</div>
-                    }
-                    <strong>{s.title}</strong>
+                }
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, color: '#f8fafc', fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {displayName}
                   </div>
-                </td>
-                <td className="admin-table__muted">{s.artist || 'â€”'}</td>
-                <td className="admin-table__muted">{s.albumName || 'â€”'}</td>
-                <td style={{ textAlign: 'right' }}>
-                  <span style={{ background: '#1db954', color: '#000', borderRadius: 12, padding: '2px 10px', fontSize: 12, fontWeight: 700 }}>
-                    {s.playCount.toLocaleString()} â–¶
+                  <div style={{ fontSize: 11, color: '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email}</div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 12, color: '#64748b' }}>
+                  {u.totalLogs} atividade(s)
+                </span>
+                {last && (
+                  <span style={{ fontSize: 11, color: '#475569' }}>
+                    {new Date(last.timestamp).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
                   </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {data.songs.length === 0 && <div className="admin-empty">Nenhuma mÃºsica tocada ainda.</div>}
+                )}
+              </div>
+              {last && (
+                <div style={{ marginTop: 8, fontSize: 12, color: '#94a3b8', borderTop: '1px solid #1e293b', paddingTop: 8 }}>
+                  <span style={{ color: actionColor[last.action] ?? '#94a3b8' }}>{actionLabel[last.action] ?? last.action}</span>
+                  {last.song?.title && <span> · {last.song.title}</span>}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-// â”€â”€ Spotify Catalog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function SpotifyCatalog({ token }: { token: string }) {
-  const [query, setQuery] = useState('');
-  const [limit, setLimit] = useState(20);
-  const [previewing, setPreviewing] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [preview, setPreview] = useState<any[] | null>(null);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [result, setResult] = useState<{ imported: number; skipped: number } | null>(null);
-  const [error, setError] = useState('');
+// ── Update App Page ───────────────────────────────────────────────────────────
+function UpdateAppPage({ token }: { token: string }) {
+  const [tab, setTab] = useState<'deploy' | 'app'>('deploy');
+  const [file, setFile] = useState<File | null>(null);
+  const [version, setVersion] = useState('');
+  const [notes, setNotes] = useState('');
+  const [status, setStatus] = useState('');
+  const [currentVersion, setCurrentVersion] = useState<any>(null);
+  const [history, setHistory] = useState<any[]>([]);
+  const [broadcastMsg, setBroadcastMsg] = useState('');
+  const [broadcastType, setBroadcastType] = useState<'info' | 'update' | 'warning'>('update');
+  const [broadcastStatus, setBroadcastStatus] = useState('');
+  const adminHeaders = { Authorization: `Bearer ${token}`, 'X-Admin-Token': import.meta.env.VITE_ADMIN_SECRET ?? '' };
 
-  const PRESETS = [
-    { label: 'Eminem', query: 'artist:Eminem' },
-    { label: 'Michael Jackson', query: 'artist:Michael Jackson' },
-    { label: 'Beatles', query: 'artist:The Beatles' },
-    { label: 'Coldplay', query: 'artist:Coldplay' },
-    { label: 'BeyoncÃ©', query: 'artist:BeyoncÃ©' },
-    { label: 'Thriller', query: 'album:Thriller' },
-    { label: 'Bohemian Rhapsody', query: 'Bohemian Rhapsody' },
-    { label: 'Funk BR', query: 'artist:Anitta' },
-  ];
+  useEffect(() => {
+    apiFetch('/app/version', token).then(setCurrentVersion).catch(() => {});
+    apiFetch('/app/history', token).then(setHistory).catch(() => {});
+  }, [token]);
 
-  async function doPreview() {
-    if (!query.trim()) return;
-    setPreviewing(true); setPreview(null); setResult(null); setError(''); setSelected(new Set());
+  async function publish() {
+    if (!file) { setStatus('Selecione um arquivo APK.'); return; }
+    setStatus('Enviando...');
+    const form = new FormData();
+    form.append('apk', file);
+    if (version) form.append('version', version);
+    if (notes) form.append('notes', notes);
     try {
-      const data = await api('/admin/spotify/preview', token, {
+      const res = await fetch(`${API_URL}/app/release/mobile`, {
         method: 'POST',
-        body: JSON.stringify({ query, limit }),
+        headers: adminHeaders,
+        credentials: 'include',
+        body: form,
       });
-      setPreview(data.tracks ?? []);
-      // Select all by default
-      setSelected(new Set((data.tracks ?? []).map((_: any, i: number) => i)));
-    } catch (e: any) { setError(e.message); }
-    finally { setPreviewing(false); }
+      const data = await res.json();
+      if (res.ok) {
+        setStatus(`✅ Publicado! Versão ${data.version}`);
+        setCurrentVersion(data);
+        setHistory(h => [data, ...h.slice(0, 19)]);
+        setFile(null); setVersion(''); setNotes('');
+      } else {
+        setStatus(`❌ ${data.message ?? 'Erro ao publicar'}`);
+      }
+    } catch (e: any) { setStatus(`❌ ${e.message}`); }
   }
 
-  async function doImport() {
-    if (!preview || selected.size === 0) return;
-    setImporting(true); setError('');
-    // Import only selected tracks by sending them directly
-    const tracks = preview.filter((_, i) => selected.has(i));
+  async function sendBroadcast() {
+    if (!broadcastMsg.trim()) { setBroadcastStatus('Digite uma mensagem.'); return; }
+    setBroadcastStatus('Enviando...');
     try {
-      const data = await api('/admin/spotify/catalog', token, {
+      const res = await fetch(`${API_URL}/app/broadcast`, {
         method: 'POST',
-        body: JSON.stringify({ query, limit: tracks.length, tracks }),
+        headers: { ...adminHeaders, 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ message: broadcastMsg.trim(), type: broadcastType }),
       });
-      setResult(data);
-      setPreview(null);
-    } catch (e: any) { setError(e.message); }
-    finally { setImporting(false); }
+      const data = await res.json();
+      if (res.ok) { setBroadcastStatus('✅ Mensagem enviada para todos os usuários!'); setBroadcastMsg(''); }
+      else setBroadcastStatus(`❌ ${data.message ?? 'Erro'}`);
+    } catch (e: any) { setBroadcastStatus(`❌ ${e.message}`); }
   }
 
-  function toggleAll() {
-    if (selected.size === preview?.length) setSelected(new Set());
-    else setSelected(new Set(preview?.map((_, i) => i) ?? []));
-  }
+  const typeColors: Record<string, string> = { info: '#3b82f6', update: '#7c3aed', warning: '#f59e0b' };
+  const typeLabels: Record<string, string> = { info: 'ℹ️ Informação', update: '🚀 Atualização', warning: '⚠️ Aviso' };
 
   return (
-    <div>
-      <h2 className="admin-section-title">CatÃ¡logo de MÃºsicas</h2>
-      <p className="admin-text-muted">
-        Busca metadados via <strong>MusicBrainz</strong> (gratuito). PrÃ©-visualize os resultados, selecione o que quiser e importe. As mÃºsicas ficam marcadas como <strong style={{ color: '#f59e0b' }}>em breve</strong> atÃ© vocÃª adicionar o arquivo de Ã¡udio.
-      </p>
+    <div className="adm-page">
+      <h1 className="adm-page__title">Gerenciar Atualizações</h1>
 
-      <div className="admin-info-box" style={{ marginBottom: 20 }}>
-        ðŸ’¡ Exemplos: <code>artist:Eminem</code> Â· <code>album:Thriller</code> Â· <code>Bohemian Rhapsody</code>
-      </div>
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-        {PRESETS.map(p => (
-          <button key={p.query} className="admin-btn admin-btn--ghost admin-btn--sm"
-            onClick={() => { setQuery(p.query); setPreview(null); setResult(null); }}>
-            {p.label}
-          </button>
+      {/* Tab switcher */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+        {([['deploy', '🚀 Deploy da Plataforma'], ['app', '📱 App Mobile']] as const).map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)} style={{
+            padding: '8px 20px', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer',
+            background: tab === id ? '#4ade80' : '#1e293b',
+            color: tab === id ? '#0f172a' : '#94a3b8',
+            border: `1px solid ${tab === id ? '#4ade80' : '#334155'}`,
+          }}>{label}</button>
         ))}
       </div>
 
-      <div className="admin-search-row" style={{ alignItems: 'flex-end' }}>
-        <div style={{ flex: 1 }}>
-          <label className="admin-label">Busca</label>
-          <input className="admin-input" placeholder='Ex: artist:Coldplay, album:Thriller, Bohemian Rhapsody'
-            value={query} onChange={e => { setQuery(e.target.value); setPreview(null); }}
-            onKeyDown={e => e.key === 'Enter' && doPreview()} />
+      {/* ── Deploy da Plataforma tab ── */}
+      {tab === 'deploy' && <DeployPanel token={token} />}
+
+      {/* ── App Mobile tab ── */}
+      {tab === 'app' && (<>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 20 }}>
+        {/* Versão atual */}
+        <div className="adm-card">
+          <div className="adm-card__title">📦 Versão Atual</div>
+          {currentVersion ? (
+            <>
+              <div style={{ fontSize: 28, fontWeight: 800, color: '#7c3aed', marginBottom: 8 }}>
+                v{currentVersion.version}
+              </div>
+              <div style={{ fontSize: 12, color: '#6a6a6a', marginBottom: 8 }}>
+                Publicada em: {currentVersion.releasedAt ? new Date(currentVersion.releasedAt).toLocaleString('pt-BR') : '—'}
+              </div>
+              <div style={{ fontSize: 13, color: '#b3b3b3', background: '#1a1a1a', borderRadius: 8, padding: '10px 12px', lineHeight: 1.6 }}>
+                {currentVersion.notes || 'Sem notas de atualização.'}
+              </div>
+              <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                <a href={currentVersion.mobileUrl} target="_blank" rel="noreferrer"
+                  style={{ fontSize: 12, color: '#7c3aed', textDecoration: 'none', background: 'rgba(124,58,237,0.1)', padding: '4px 10px', borderRadius: 6 }}>
+                  📱 Download Mobile
+                </a>
+              </div>
+            </>
+          ) : (
+            <div style={{ color: '#6a6a6a', fontSize: 13 }}>Carregando...</div>
+          )}
         </div>
-        <div style={{ width: 90 }}>
-          <label className="admin-label">Qtd</label>
-          <select className="admin-select" style={{ width: '100%', padding: '10px 8px' }}
-            value={limit} onChange={e => setLimit(Number(e.target.value))}>
-            <option value={10}>10</option>
-            <option value={20}>20</option>
-            <option value={50}>50</option>
-            <option value={100}>100</option>
-            <option value={200}>200</option>
-            <option value={500}>500</option>
-          </select>
+
+        {/* Histórico */}
+        <div className="adm-card">
+          <div className="adm-card__title">📋 Histórico de Versões</div>
+          <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {history.length === 0 && <div style={{ color: '#6a6a6a', fontSize: 13 }}>Nenhum histórico ainda.</div>}
+            {history.map((h, i) => (
+              <div key={i} style={{ background: '#1a1a1a', borderRadius: 8, padding: '8px 12px', borderLeft: '3px solid #7c3aed' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontWeight: 700, color: '#fff', fontSize: 13 }}>v{h.version}</span>
+                  <span style={{ fontSize: 11, color: '#6a6a6a' }}>{h.releasedAt ? new Date(h.releasedAt).toLocaleDateString('pt-BR') : ''}</span>
+                </div>
+                <div style={{ fontSize: 12, color: '#b3b3b3', marginTop: 4 }}>{h.notes}</div>
+              </div>
+            ))}
+          </div>
         </div>
-        <button className="admin-btn admin-btn--primary" onClick={doPreview}
-          disabled={previewing || !query.trim()} style={{ height: 42 }}>
-          {previewing ? 'â³ Buscando...' : 'ðŸ” Buscar'}
-        </button>
       </div>
 
-      {error && <div className="admin-msg admin-msg--error">âŒ {error}</div>}
-      {result && <div className="admin-msg admin-msg--success">âœ… <strong>{result.imported}</strong> importadas Â· <strong>{result.skipped}</strong> jÃ¡ existiam</div>}
+      {/* Editar notas da versão atual */}
+      <div className="adm-card" style={{ marginBottom: 20 }}>
+        <div className="adm-card__title">📝 Notas de Atualização — Versão Atual</div>
+        <div style={{ fontSize: 13, color: '#6a6a6a', marginBottom: 12 }}>
+          Edite as notas que os usuários veem ao abrir o app. Não precisa publicar um APK novo.
+        </div>
+        <div className="adm-form-row">
+          <label>Notas (suporta emojis e quebras de linha)</label>
+          <textarea
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            rows={5}
+            placeholder={`Ex:\n🎉 Busca por usuários, álbuns e playlists\n⚡ Efeitos de raio para usuários Premium\n🐛 Correções de bugs e melhorias de performance`}
+            style={{ fontFamily: 'monospace', fontSize: 13 }}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <button className="adm-btn adm-btn--primary" onClick={async () => {
+            if (!notes.trim()) { setStatus('Digite as notas.'); return; }
+            setStatus('Salvando...');
+            try {
+              const r = await apiFetch('/app/notes', token, { method: 'POST', body: JSON.stringify({ notes, version: version || undefined }) });
+              setCurrentVersion(r);
+              setStatus('✅ Notas salvas!');
+              setTimeout(() => setStatus(''), 3000);
+            } catch (e: any) { setStatus(`❌ ${e.message}`); }
+          }}>
+            💾 Salvar Notas
+          </button>
+          {currentVersion?.notes && (
+            <button className="adm-btn adm-btn--ghost" style={{ fontSize: 12 }}
+              onClick={() => setNotes(currentVersion.notes)}>
+              Carregar notas atuais
+            </button>
+          )}
+        </div>
+        {status && <div className="adm-log" style={{ marginTop: 10 }}>{status}</div>}
+      </div>
 
-      {preview && preview.length === 0 && (
-        <div className="admin-empty">Nenhum resultado encontrado. Tente outra busca.</div>
-      )}
-
-      {preview && preview.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <h3 className="admin-subsection-title" style={{ margin: 0 }}>
-              {preview.length} resultado(s) â€” selecione o que importar
-            </h3>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="admin-btn admin-btn--ghost admin-btn--sm" onClick={toggleAll}>
-                {selected.size === preview.length ? 'Desmarcar todos' : 'Selecionar todos'}
-              </button>
-              <button className="admin-btn admin-btn--primary" onClick={doImport}
-                disabled={importing || selected.size === 0}
-                style={{ background: '#1db954' }}>
-                {importing ? 'â³ Importando...' : `â¬‡ï¸ Importar ${selected.size} mÃºsica(s)`}
-              </button>
-            </div>
+      {/* Publicar nova versão */}
+      <div className="adm-card" style={{ marginBottom: 20 }}>
+        <div className="adm-card__title">🚀 Publicar Nova Versão</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div className="adm-form-row">
+            <label>Versão (ex: 1.2.0) — deixe vazio para auto-incrementar</label>
+            <input value={version} onChange={e => setVersion(e.target.value)} placeholder={`${currentVersion?.version ?? '1.0.0'} → auto`} />
           </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
-            {preview.map((t: any, i: number) => {
-              const sel = selected.has(i);
-              return (
-                <div key={i}
-                  onClick={() => {
-                    const s = new Set(selected);
-                    sel ? s.delete(i) : s.add(i);
-                    setSelected(s);
-                  }}
-                  style={{
-                    background: sel ? '#0d2a1a' : '#1a1a1a',
-                    border: `2px solid ${sel ? '#1db954' : 'transparent'}`,
-                    borderRadius: 8, overflow: 'hidden', cursor: 'pointer',
-                    transition: 'all 0.15s',
-                  }}>
-                  {t.coverUrl
-                    ? <img src={t.coverUrl} alt={t.title} style={{ width: '100%', aspectRatio: '1', objectFit: 'cover' }} />
-                    : <div style={{ width: '100%', aspectRatio: '1', background: '#2a2a2a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32 }}>ðŸŽµ</div>
-                  }
-                  <div style={{ padding: '8px 10px' }}>
-                    {sel && <div style={{ fontSize: 10, color: '#1db954', fontWeight: 700, marginBottom: 2 }}>âœ“ SELECIONADO</div>}
-                    <div style={{ fontWeight: 700, fontSize: 12, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
-                    <div style={{ fontSize: 11, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.artist}</div>
-                    <div style={{ fontSize: 10, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.album}</div>
-                  </div>
-                </div>
-              );
-            })}
+          <div className="adm-form-row">
+            <label>Arquivo APK (Mobile)</label>
+            <input type="file" accept=".apk" onChange={e => setFile(e.target.files?.[0] ?? null)} />
           </div>
         </div>
-      )}
+        <div className="adm-form-row">
+          <label>Notas de atualização (o que há de novo)</label>
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3}
+            placeholder="Ex: Novo player, correção de bugs, melhorias de performance..." />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <button className="adm-btn adm-btn--primary" onClick={publish} disabled={!file}>
+            📤 Publicar APK
+          </button>
+          {file && <span style={{ fontSize: 12, color: '#b3b3b3' }}>📎 {file.name} ({(file.size / 1024 / 1024).toFixed(1)} MB)</span>}
+        </div>
+        {status && <div className="adm-log" style={{ marginTop: 12 }}>{status}</div>}
+      </div>
+
+      {/* Broadcast global */}
+      <div className="adm-card">
+        <div className="adm-card__title">📢 Mensagem Global — Todas as Plataformas</div>
+        <div style={{ fontSize: 13, color: '#6a6a6a', marginBottom: 16 }}>
+          Envia uma notificação em tempo real para todos os usuários conectados (web, mobile e TV).
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, marginBottom: 12 }}>
+          <div className="adm-form-row" style={{ margin: 0 }}>
+            <label>Tipo de mensagem</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {(['info', 'update', 'warning'] as const).map(t => (
+                <button key={t} onClick={() => setBroadcastType(t)} style={{
+                  padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                  background: broadcastType === t ? typeColors[t] : '#2a2a2a',
+                  color: broadcastType === t ? '#fff' : '#b3b3b3',
+                  border: `1px solid ${broadcastType === t ? typeColors[t] : '#3a3a3a'}`,
+                }}>
+                  {typeLabels[t]}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="adm-form-row">
+          <label>Mensagem</label>
+          <textarea value={broadcastMsg} onChange={e => setBroadcastMsg(e.target.value)} rows={3}
+            placeholder="Ex: 🎉 Nova versão 1.2.0 disponível! Avalie as novidades e nos dê seu feedback..." />
+        </div>
+        <button className="adm-btn adm-btn--primary" onClick={sendBroadcast} disabled={!broadcastMsg.trim()}
+          style={{ background: typeColors[broadcastType] }}>
+          📡 Enviar para Todos
+        </button>
+        {broadcastStatus && <div className="adm-log" style={{ marginTop: 12 }}>{broadcastStatus}</div>}
+      </div>
+      </>)}
     </div>
   );
 }
 
-// â”€â”€ Admin Panel root â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-export function AdminPanel({ token, userEmail, onExit }: { token: string; userEmail: string; onExit: () => void }) {
-  const [view, setView] = useState<AdminView>('dashboard');
+// ── Settings Page ─────────────────────────────────────────────────────────────
+function SettingsPage({ userEmail }: { userEmail: string }) {
+  return (
+    <div className="adm-page">
+      <h1 className="adm-page__title">Configurações</h1>
+      <div className="adm-card" style={{ maxWidth: 480 }}>
+        <div className="adm-card__title">Conta Admin</div>
+        <div className="adm-form-row"><label>Email</label><input value={userEmail} readOnly /></div>
+        <div className="adm-card__title" style={{ marginTop: 24 }}>Segurança</div>
+        <div className="adm-plan-dist__row"><span>HTTPS</span><span className="adm-badge adm-badge--green">Ativo</span></div>
+        <div className="adm-plan-dist__row"><span>2FA</span><span className="adm-badge adm-badge--green">Ativo</span></div>
+        <div className="adm-plan-dist__row"><span>Acesso restrito</span><span className="adm-badge adm-badge--green">Admins only</span></div>
+      </div>
+    </div>
+  );
+}
 
-  const NAV: { id: AdminView; icon: string; label: string }[] = [
-    { id: 'dashboard', icon: 'ðŸ“Š', label: 'Dashboard' },
-    { id: 'songs', icon: 'ðŸŽµ', label: 'MÃºsicas' },
-    { id: 'upload', icon: 'â¬†ï¸', label: 'Upload' },
-    { id: 'import', icon: 'ðŸ“¥', label: 'Importar' },
-    { id: 'catalog', icon: 'ðŸŽ§', label: 'CatÃ¡logo' },
-    { id: 'users', icon: 'ðŸ‘¥', label: 'UsuÃ¡rios' },
-    { id: 'activity', icon: 'ðŸ“‹', label: 'Atividades' },
-    { id: 'release', icon: 'ðŸ“±', label: 'Publicar App' },
-    { id: 'playstats', icon: 'ðŸ“Š', label: 'Plays' },
-  ];
+// ── Root ──────────────────────────────────────────────────────────────────────
+const DEFAULT_PROFILE: ProfileData = {
+  name: '', username: '', avatarUrl: '', coverUrl: '',
+  badges: ['admin'], rayColor: '#7c3aed', rayCount: 8, rayStyle: 'normal', nameColor: '#ef4444',
+};
+
+export function AdminPanel({ token: tokenProp, userEmail, onExit, onLogout }: AdminPanelProps) {
+  // Resolve o JWT real — quando cross-origin (ngrok), o token prop pode ser 'authenticated'
+  const token = (tokenProp && tokenProp !== 'authenticated')
+    ? tokenProp
+    : (sessionStorage.getItem('_om_access') ?? tokenProp);
+  const [page, setPage] = useState<AdminPage>('dashboard');
+  const [search, setSearch] = useState('');
+  const [profile, setProfile] = useState<ProfileData>(() => {
+    try { return JSON.parse(localStorage.getItem('adm_profile') ?? 'null') || DEFAULT_PROFILE; }
+    catch { return DEFAULT_PROFILE; }
+  });
+  const [showProfile, setShowProfile] = useState(false);
+
+  // Sincroniza avatarUrl e nome do backend ao abrir o painel
+  useEffect(() => {
+    apiFetch('/social/profile/me', token)
+      .then((data: any) => {
+        if (!data?.id) return;
+        setProfile(prev => ({
+          ...prev,
+          name: data.name ?? prev.name,
+          username: data.username ?? prev.username,
+          avatarUrl: data.avatarUrl ?? prev.avatarUrl,
+          coverUrl: data.coverUrl ?? prev.coverUrl,
+        }));
+      })
+      .catch(() => {});
+  }, [token]);
+
+  async function saveProfile(p: ProfileData) {
+    setProfile(p);
+    localStorage.setItem('adm_profile', JSON.stringify(p));
+    // Persiste flair no backend para que outros usuários vejam
+    const flair = {
+      enabled: true,
+      beatSync: false,
+      badges: p.badges,
+      rayColor: p.rayColor,
+      rayCount: p.rayCount,
+      rayStyle: p.rayStyle,
+      nameColor: p.nameColor,
+    };
+    try {
+      await apiFetch('/social/profile', token, { method: 'POST', body: JSON.stringify({ name: p.name, username: p.username, flair }) });
+    } catch { /* silently fail */ }
+  }
 
   return (
-    <div className="admin-layout">
-      <aside className="admin-sidebar">
-        <div className="admin-sidebar__brand">
-          <span>âš™ï¸</span>
-          <div>
-            <div className="admin-sidebar__title">Painel Admin</div>
-            <div className="admin-sidebar__sub">{userEmail}</div>
-          </div>
+    <div className="adm-root">
+      <Sidebar page={page} setPage={setPage} onExit={onExit} onLogout={onLogout} />
+      <div className="adm-main">
+        <Topbar userEmail={userEmail} search={search} setSearch={setSearch} profile={profile} onOpenProfile={() => setShowProfile(true)} />
+        <div className="adm-content">
+          {page === 'dashboard' && <Dashboard token={token} profile={profile} />}
+          {page === 'songs'     && <SongsPage token={token} search={search} />}
+          {page === 'users'     && <UsersPage token={token} search={search} />}
+          {page === 'import'    && <ImportPage token={token} />}
+          {page === 'activity'  && <ActivityPage token={token} />}
+          {page === 'update'    && <UpdateAppPage token={token} />}
+          {page === 'settings'  && <SettingsPage userEmail={userEmail} />}
         </div>
-        <nav className="admin-sidebar__nav">
-          {NAV.map(n => (
-            <button
-              key={n.id}
-              className={`admin-nav-item${view === n.id ? ' admin-nav-item--active' : ''}`}
-              onClick={() => setView(n.id)}
-            >
-              <span>{n.icon}</span> {n.label}
-            </button>
-          ))}
-        </nav>
-        <button className="admin-nav-item admin-nav-item--exit" onClick={onExit}>
-          <span>ðŸŽµ</span> Voltar ao Player
-        </button>
-      </aside>
-
-      <main className="admin-main">
-        {view === 'dashboard' && <Dashboard token={token} />}
-        {view === 'songs' && <Songs token={token} />}
-        {view === 'upload' && <Upload token={token} />}
-        {view === 'import' && <Import token={token} />}
-        {view === 'catalog' && <SpotifyCatalog token={token} />}
-        {view === 'users' && <Users token={token} />}
-        {view === 'activity' && <Activity token={token} />}
-        {view === 'release' && <ReleaseApp token={token} />}
-        {view === 'playstats' && <PlayStats token={token} />}
-      </main>
+      </div>
+      {showProfile && <ProfileModal profile={profile} onSave={saveProfile} onClose={() => setShowProfile(false)} />}
     </div>
   );
 }

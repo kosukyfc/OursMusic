@@ -28,7 +28,7 @@ export class AdminService {
   }
 
   async getStats() {
-    const [totalSongs, totalUsers, totalPlaylists, recentActivity] = await Promise.all([
+    const [totalSongs, totalUsers, totalPlaylists, totalActivities] = await Promise.all([
       this.prisma.song.count(),
       this.prisma.user.count(),
       this.prisma.playlist.count(),
@@ -38,7 +38,47 @@ export class AdminService {
       by: ['plan'],
       _count: { plan: true },
     });
-    return { totalSongs, totalUsers, totalPlaylists, recentActivity, planBreakdown };
+
+    // Plays por dia nos últimos 7 dias
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const dailyPlays = await this.prisma.activityLog.groupBy({
+      by: ['timestamp'],
+      where: { action: 'play', timestamp: { gte: sevenDaysAgo } },
+      _count: { id: true },
+    });
+
+    // Agrupa por dia
+    const playsByDay: Record<string, number> = {};
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 24 * 60 * 60 * 1000);
+      playsByDay[d.toISOString().slice(0, 10)] = 0;
+    }
+    for (const row of dailyPlays) {
+      const day = new Date(row.timestamp).toISOString().slice(0, 10);
+      if (day in playsByDay) playsByDay[day] += row._count.id;
+    }
+
+    // Top 5 músicas mais tocadas
+    const topSongs = await this.prisma.song.findMany({
+      orderBy: { playCount: 'desc' },
+      take: 5,
+      select: { id: true, title: true, artist: true, playCount: true, coverUrl: true },
+    });
+
+    // Usuários ativos (com play nos últimos 7 dias)
+    const activeUsers = await this.prisma.activityLog.groupBy({
+      by: ['userId'],
+      where: { action: 'play', timestamp: { gte: sevenDaysAgo } },
+      _count: { userId: true },
+    });
+
+    return {
+      totalSongs, totalUsers, totalPlaylists, totalActivities,
+      planBreakdown,
+      playsByDay,
+      topSongs,
+      activeUsersCount: activeUsers.length,
+    };
   }
 
   async listUsers(q?: string) {
@@ -691,7 +731,9 @@ export class AdminService {
 
     let enriched = 0, notFound = 0;
     for (const song of songs) {
-      const genre = await this.spotifyService.fetchGenre(song.title, song.artist ?? null, song.deezerId ?? null);
+      // fetchGenre pode retornar string ou array (ajustar conforme implementação real)
+      let genreResult = await this.spotifyService.fetchGenre(song.title, song.artist ?? null, song.deezerId ?? null);
+      let genre = Array.isArray(genreResult) ? genreResult[0] : genreResult;
       if (genre) {
         await this.prisma.song.update({ where: { id: song.id }, data: { genre } });
         enriched++;
@@ -768,9 +810,121 @@ export class AdminService {
       orderBy: { timestamp: 'desc' },
       take: limit,
       include: {
-        user: { select: { email: true } },
+        user: { select: { email: true, username: true, name: true } },
         song: { select: { title: true } },
       },
     });
+  }
+
+  /** Returns list of users who have activity, with last activity and total count */
+  async getActivityUsers() {
+    const users = await this.prisma.user.findMany({
+      where: { activityLogs: { some: {} } },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        name: true,
+        avatarUrl: true,
+        activityLogs: {
+          orderBy: { timestamp: 'desc' },
+          take: 1,
+          select: { timestamp: true, action: true, song: { select: { title: true } } },
+        },
+        _count: { select: { activityLogs: true } },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    return users.map(u => ({
+      id: u.id,
+      email: u.email,
+      username: u.username,
+      name: u.name,
+      avatarUrl: u.avatarUrl,
+      totalLogs: u._count.activityLogs,
+      lastActivity: u.activityLogs[0] ?? null,
+    }));
+  }
+
+  /** Returns all activity logs for a specific user */
+  async getActivityByUser(userId: string, limit: number) {
+    return this.prisma.activityLog.findMany({
+      where: { userId },
+      orderBy: { timestamp: 'desc' },
+      take: limit,
+      include: {
+        song: { select: { title: true, artist: true, coverUrl: true } },
+      },
+    });
+  }
+
+  /**
+   * Busca o vídeo clipe oficial de cada música via yt-dlp (YouTube search).
+   * Salva a URL do vídeo no campo videoUrl da música.
+   * Só processa músicas sem videoUrl (onlyMissing=true por padrão).
+   */
+  async enrichWithVideos(onlyMissing = true): Promise<{ enriched: number; notFound: number; total: number }> {
+    const { exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const execAsync = promisify(exec);
+
+    const songs = await this.prisma.song.findMany({
+      where: onlyMissing ? { videoUrl: null } : undefined,
+      select: { id: true, title: true, artist: true },
+    });
+
+    let enriched = 0, notFound = 0;
+
+    for (const song of songs) {
+      const query = `${song.artist ? song.artist + ' - ' : ''}${song.title} official video`;
+      try {
+        const { stdout } = await execAsync(
+          `yt-dlp --print id --no-playlist --quiet -- "ytsearch1:${query.replace(/"/g, '')}"`,
+          { timeout: 15000 },
+        );
+        const videoId = stdout.trim().split('\n')[0];
+        if (videoId) {
+          await this.prisma.song.update({
+            where: { id: song.id },
+            data: { videoUrl: `https://www.youtube.com/watch?v=${videoId}` },
+          });
+          enriched++;
+        } else {
+          notFound++;
+        }
+      } catch {
+        notFound++;
+      }
+    }
+
+    return { enriched, notFound, total: songs.length };
+  }
+
+  async enrichCovers(onlyMissing = true): Promise<{ enriched: number; notFound: number; total: number }> {
+    const songs = await this.prisma.song.findMany({
+      where: onlyMissing ? { coverUrl: null } : undefined,
+      select: { id: true, title: true, artist: true, albumName: true },
+    });
+
+    let enriched = 0, notFound = 0;
+
+    for (const song of songs) {
+      try {
+        const result = await this.spotifyService.searchTrack(song.title, song.artist ?? undefined);
+        if (result?.coverUrl) {
+          await this.prisma.song.update({
+            where: { id: song.id },
+            data: { coverUrl: result.coverUrl },
+          });
+          enriched++;
+        } else {
+          notFound++;
+        }
+      } catch {
+        notFound++;
+      }
+    }
+
+    return { enriched, notFound, total: songs.length };
   }
 }

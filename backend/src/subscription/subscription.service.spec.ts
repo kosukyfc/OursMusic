@@ -2,10 +2,12 @@ import * as fc from 'fast-check';
 import { Test } from '@nestjs/testing';
 import { SubscriptionService } from './subscription.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { DevicesGateway } from '../devices/devices.gateway';
 
 describe('SubscriptionService', () => {
   let service: SubscriptionService;
   let prisma: Record<string, any>;
+  let devicesGateway: Record<string, any>;
 
   beforeEach(async () => {
     prisma = {
@@ -21,10 +23,17 @@ describe('SubscriptionService', () => {
       $transaction: jest.fn(async (fn: any) => fn(prisma)),
     };
 
+    devicesGateway = {
+      notifyClients: jest.fn(),
+      broadcast: jest.fn(),
+      server: { emit: jest.fn() },
+    };
+
     const module = await Test.createTestingModule({
       providers: [
         SubscriptionService,
         { provide: PrismaService, useValue: prisma },
+        { provide: DevicesGateway, useValue: devicesGateway },
       ],
     }).compile();
 

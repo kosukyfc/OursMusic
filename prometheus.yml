@@ -1,0 +1,63 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'oursmusic-monitor'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files:
+  - "alert_rules.yml"
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Backend App
+  - job_name: 'backend'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['localhost:3000']
+    scrape_interval: 5s
+    scrape_timeout: 5s
+
+  # PostgreSQL
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['localhost:9187']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'postgres:5432'
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['localhost:9121']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'redis:6379'
+
+  # Node Exporter
+  - job_name: 'node'
+    static_configs:
+      - targets: ['localhost:9100']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'host-metrics'
+
+  # Nginx (if used)
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['localhost:9113']
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'nginx_requests_total|nginx_request_duration_seconds'
+        action: keep

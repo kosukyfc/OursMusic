@@ -9,6 +9,7 @@ export interface AppTheme {
   textPrimary: string;
   textSecondary: string;
   textMuted: string;
+  premium?: boolean; // requer plano premium ou family
 }
 
 export const THEMES: AppTheme[] = [
@@ -35,6 +36,7 @@ export const THEMES: AppTheme[] = [
     textPrimary: '#121212',
     textSecondary: '#535353',
     textMuted: '#9a9a9a',
+    premium: true,
   },
   {
     id: 'red',
@@ -47,6 +49,7 @@ export const THEMES: AppTheme[] = [
     textPrimary: '#ffffff',
     textSecondary: '#ffb3b3',
     textMuted: '#884444',
+    premium: true,
   },
   {
     id: 'purple',
@@ -59,6 +62,7 @@ export const THEMES: AppTheme[] = [
     textPrimary: '#ffffff',
     textSecondary: '#c4b5fd',
     textMuted: '#6d4a9a',
+    premium: true,
   },
   {
     id: 'pink',
@@ -71,6 +75,7 @@ export const THEMES: AppTheme[] = [
     textPrimary: '#ffffff',
     textSecondary: '#fbcfe8',
     textMuted: '#9d4a6a',
+    premium: true,
   },
   {
     id: 'neon',
@@ -83,6 +88,7 @@ export const THEMES: AppTheme[] = [
     textPrimary: '#00ff88',
     textSecondary: '#00cc66',
     textMuted: '#006633',
+    premium: true,
   },
   {
     id: 'green',
@@ -95,6 +101,7 @@ export const THEMES: AppTheme[] = [
     textPrimary: '#ffffff',
     textSecondary: '#a7f3d0',
     textMuted: '#4a8a5a',
+    premium: true,
   },
   {
     id: 'blue',
@@ -107,6 +114,7 @@ export const THEMES: AppTheme[] = [
     textPrimary: '#ffffff',
     textSecondary: '#bfdbfe',
     textMuted: '#3a5a8a',
+    premium: true,
   },
 ];
 
@@ -125,9 +133,47 @@ export function applyTheme(theme: AppTheme) {
   localStorage.setItem('theme', theme.id);
 }
 
-export function loadSavedTheme() {
+export function loadSavedTheme(isPremium = false) {
   const saved = localStorage.getItem('theme') ?? 'dark';
   const theme = THEMES.find(t => t.id === saved) ?? THEMES[0];
-  applyTheme(theme);
-  return theme;
+  // Se o tema salvo é premium mas o usuário não tem plano, usa o padrão
+  const resolved = (theme.premium && !isPremium) ? THEMES[0] : theme;
+  applyTheme(resolved);
+  return resolved;
+}
+
+/**
+ * 🌙 Auto-switch theme based on time of day
+ * - 19:00 to 06:00 → Dark mode
+ * - 06:00 to 19:00 → Light mode (if premium)
+ */
+export function getAutoTheme(isPremium = false): AppTheme {
+  const hour = new Date().getHours();
+  const isDarkHours = hour >= 19 || hour < 6;
+  
+  if (isDarkHours) {
+    return THEMES.find(t => t.id === 'dark') ?? THEMES[0];
+  } else {
+    // Light mode only available for premium
+    return isPremium
+      ? (THEMES.find(t => t.id === 'light') ?? THEMES[0])
+      : THEMES[0];
+  }
+}
+
+/**
+ * 🌙 Enable auto dark mode — theme switches automatically by time
+ */
+export function enableAutoDarkMode(callback?: (theme: AppTheme) => void) {
+  const updateTheme = () => {
+    const theme = getAutoTheme(false);
+    applyTheme(theme);
+    callback?.(theme);
+  };
+
+  // Check every minute
+  const interval = setInterval(updateTheme, 60000);
+  updateTheme(); // Apply immediately
+
+  return () => clearInterval(interval); // Cleanup function
 }

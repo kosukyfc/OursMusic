@@ -54,6 +54,9 @@ export class AdminController {
         expiresAt: expiresAt?.toISOString() ?? null,
         message: `🎉 Você recebeu o plano Premium${durationDays === -1 ? ' ilimitado' : ` por ${durationLabel}`}!`,
       });
+    } else {
+      // Notifica downgrade também
+      this.devicesGateway.notifyUser(id, 'premium:granted', { plan, message: 'Seu plano foi alterado.' });
     }
 
     return updated;
@@ -152,6 +155,16 @@ export class AdminController {
     return this.adminService.getActivityLogs(Number(limit));
   }
 
+  @Get('activity/users')
+  activityUsers() {
+    return this.adminService.getActivityUsers();
+  }
+
+  @Get('activity/users/:userId')
+  activityByUser(@Param('userId') userId: string, @Query('limit') limit = '100') {
+    return this.adminService.getActivityByUser(userId, Number(limit));
+  }
+
   // ── Spotify enrichment ───────────────────────────────────
   @Post('drive/make-public')
   makeAllDriveFilesPublic(@Req() req: AuthReq) {
@@ -171,6 +184,16 @@ export class AdminController {
   @Post('spotify/enrich-genres')
   enrichGenres(@Query('all') all?: string) {
     return this.adminService.enrichGenres(all !== 'true');
+  }
+
+  @Post('spotify/enrich-videos')
+  enrichVideos(@Query('all') all?: string) {
+    return this.adminService.enrichWithVideos(all !== 'true');
+  }
+
+  @Post('spotify/enrich-covers')
+  enrichCovers(@Query('all') all?: string) {
+    return this.adminService.enrichCovers(all !== 'true');
   }
 
   @Post('spotify/catalog')
@@ -196,6 +219,45 @@ export class AdminController {
   }
 
   // ── Magic Import ─────────────────────────────────────────
+  @Get('magic-import/artist-tracks')
+  @Public()
+  async searchArtistTracks(
+    @Query('artist') artist: string,
+    @Query('limit') limit = 50,
+  ) {
+    if (!artist?.trim()) throw new BadRequestException('artist is required');
+    return this.magicImportService.deezerSearchArtistTracks(artist.trim(), Number(limit));
+  }
+
+  @Get('magic-import/artist-albums')
+  @Public()
+  async getArtistAlbums(@Query('artist') artist: string) {
+    if (!artist?.trim()) throw new BadRequestException('artist is required');
+    return this.magicImportService.deezerGetArtistAlbums(artist.trim());
+  }
+
+  @Post('magic-import/artist-albums')
+  async importAllArtistAlbums(
+    @Req() req: AuthReq,
+    @Body('artist') artist: string,
+    @Body('albumIds') albumIds: string[],
+    @Body('jobId') jobId = `job-${Date.now()}`,
+  ) {
+    if (!artist?.trim()) throw new BadRequestException('artist is required');
+    if (!albumIds?.length) throw new BadRequestException('albumIds are required');
+    return this.magicImportService.magicImportAllArtistAlbums(req.user.userId, artist.trim(), albumIds, jobId);
+  }
+
+  @Post('magic-import/artist-tracks')
+  async importArtistTracks(
+    @Req() req: AuthReq,
+    @Body('tracks') tracks: any[],
+    @Body('jobId') jobId = `job-${Date.now()}`,
+  ) {
+    if (!tracks?.length) throw new BadRequestException('tracks are required');
+    return this.magicImportService.magicImportArtistTracks(req.user.userId, tracks, jobId);
+  }
+
   @Post('magic-import')
   async magicImport(
     @Req() req: AuthReq,

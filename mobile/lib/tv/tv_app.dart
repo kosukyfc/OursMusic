@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../api.dart';
 import '../theme.dart';
+import '../screens/splash_screen.dart';
 import 'tv_home_screen.dart';
 
 /// Entry point for TV/TV Box layout.
@@ -15,11 +16,11 @@ class TvApp extends StatefulWidget {
 class _TvAppState extends State<TvApp> {
   bool _loggedIn = false;
   bool _loading = true;
+  bool _showSplash = true;
 
   @override
   void initState() {
     super.initState();
-    // Try to force landscape — some TV boxes don't support this, so we catch silently
     try {
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.landscapeLeft,
@@ -41,18 +42,27 @@ class _TvAppState extends State<TvApp> {
 
   @override
   Widget build(BuildContext context) {
+    if (_showSplash) {
+      return MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: SplashScreen(onDone: () => setState(() => _showSplash = false)),
+      );
+    }
     if (_loading) {
       return const MaterialApp(
+          debugShowCheckedModeBanner: false,
           home: Scaffold(
               backgroundColor: kBgBase,
               body: Center(child: CircularProgressIndicator(color: kAccent))));
     }
     if (!_loggedIn) {
       return MaterialApp(
+          debugShowCheckedModeBanner: false,
           theme: _tvTheme(),
           home: _TvLoginScreen(onAuth: () => setState(() => _loggedIn = true)));
     }
     return MaterialApp(
+        debugShowCheckedModeBanner: false,
         theme: _tvTheme(),
         home: TvHomeScreen(onLogout: () => setState(() => _loggedIn = false)));
   }
@@ -118,9 +128,9 @@ class _TvLoginScreenState extends State<_TvLoginScreen> {
         child: SizedBox(
             width: 480,
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.music_note, color: kAccent, size: 64),
-              const SizedBox(height: 24),
-              const Text('Music App',
+              const OursMusicLogo(size: 40, showName: false),
+              const SizedBox(height: 16),
+              const Text('OursMusic',
                   style: TextStyle(
                       color: kTextPrimary,
                       fontSize: 36,

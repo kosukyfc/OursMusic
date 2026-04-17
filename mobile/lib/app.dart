@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
 import 'api.dart';
 import 'theme.dart';
 import 'screens/login_screen.dart';
@@ -9,6 +10,22 @@ import 'screens/onboarding_screen.dart';
 import 'services/update_service.dart';
 import 'services/theme_service.dart';
 import 'crash_logger.dart';
+import 'hooks/use_tempo_control.dart';
+import 'hooks/use_listening_heatmap.dart';
+import 'hooks/use_font_size_adjuster.dart';
+import 'hooks/use_setlist_builder.dart';
+import 'hooks/use_audio_visualizer.dart';
+import 'hooks/use_similar_artists.dart';
+import 'hooks/use_dyslexia_font.dart';
+import 'hooks/use_volume_shortcuts.dart';
+import 'hooks/use_smart_queue.dart';
+import 'hooks/use_music_theory.dart';
+import 'hooks/use_crossfade.dart';
+import 'hooks/use_karaoke_mode.dart';
+import 'hooks/use_audio_ducking.dart';
+import 'hooks/use_gapless_playback.dart';
+import 'hooks/use_voice_commands.dart';
+import 'hooks/use_keyboard_shortcuts.dart';
 
 const _appVersion = String.fromEnvironment('APP_VERSION', defaultValue: '1.0.0');
 
@@ -164,11 +181,31 @@ class _MusicAppState extends State<MusicApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'OursMusic',
-      debugShowCheckedModeBanner: false,
-      navigatorKey: navigatorKey,
-      theme: themeService.current.toFlutterTheme(),
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => TempoController()),
+        ChangeNotifierProvider(create: (_) => ListeningHeatmapController()..loadPersistence()),
+        ChangeNotifierProvider(create: (_) => FontSizeAdjuster()..loadPersistence()),
+        ChangeNotifierProvider(create: (_) => SetlistBuilder()..loadPersistence()),
+        ChangeNotifierProvider(create: (_) => AudioVisualizer()),
+        ChangeNotifierProvider(create: (_) => SimilarArtistsChain()),
+        ChangeNotifierProvider(create: (_) => DyslexiaFont()..loadPersistence()),
+        ChangeNotifierProvider(create: (_) => VolumeShortcuts()),
+        // PHASE 6: Additional features
+        ChangeNotifierProvider(create: (_) => SmartQueueController()),
+        ChangeNotifierProvider(create: (_) => MusicTheoryController()),
+        ChangeNotifierProvider(create: (_) => CrossfadeController()),
+        ChangeNotifierProvider(create: (_) => KaraokeModeController()),
+        ChangeNotifierProvider(create: (_) => AudioDuckingController()),
+        ChangeNotifierProvider(create: (_) => GaplessPlaybackController()),
+        ChangeNotifierProvider(create: (_) => VoiceCommandsController()),
+        ChangeNotifierProvider(create: (_) => KeyboardShortcutsController()),
+      ],
+      child: MaterialApp(
+        title: 'OursMusic',
+        debugShowCheckedModeBanner: false,
+        navigatorKey: navigatorKey,
+        theme: themeService.current.toFlutterTheme(),
       builder: (context, child) {
         // Catch widget build errors
         ErrorWidget.builder = (FlutterErrorDetails details) {
@@ -197,6 +234,7 @@ class _MusicAppState extends State<MusicApp> {
               : _loggedIn
                   ? HomeScreen(onLogout: () => setState(() => _loggedIn = false))
                   : LoginScreen(onLogin: () => setState(() => _loggedIn = true), onRegister: () => setState(() { _loggedIn = true; _showOnboarding = true; })),
+      ),
     );
   }
 }

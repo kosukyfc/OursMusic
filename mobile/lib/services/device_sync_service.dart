@@ -9,9 +9,19 @@ class DeviceSyncService extends ChangeNotifier {
   final PlayerController _player;
   bool _connected = false;
   List<Map<String, dynamic>> _devices = [];
+  Map<String, dynamic>? _lastBroadcast;
+  Map<String, dynamic>? _pendingUpdate;
+  String? _updatedPlan; // plano atualizado via WebSocket
 
   bool get connected => _connected;
   List<Map<String, dynamic>> get devices => _devices;
+  Map<String, dynamic>? get lastBroadcast => _lastBroadcast;
+  Map<String, dynamic>? get pendingUpdate => _pendingUpdate;
+  String? get updatedPlan => _updatedPlan;
+
+  void clearBroadcast() { _lastBroadcast = null; notifyListeners(); }
+  void clearPendingUpdate() { _pendingUpdate = null; notifyListeners(); }
+  void clearUpdatedPlan() { _updatedPlan = null; notifyListeners(); }
 
   DeviceSyncService(this._player);
 
@@ -69,6 +79,37 @@ class DeviceSyncService extends ChangeNotifier {
     _socket!.on('devices:list', (data) {
       if (data is List) {
         _devices = data.whereType<Map<String, dynamic>>().toList();
+        notifyListeners();
+      }
+    });
+
+    // Global broadcast from admin
+    _socket!.on('app:broadcast', (data) {
+      if (data is! Map) return;
+      _lastBroadcast = {
+        'message': data['message']?.toString() ?? '',
+        'type': data['type']?.toString() ?? 'info',
+        'sentAt': data['sentAt']?.toString() ?? '',
+      };
+      notifyListeners();
+    });
+
+    // New version available
+    _socket!.on('app:update-available', (data) {
+      if (data is! Map) return;
+      _pendingUpdate = {
+        'version': data['version']?.toString() ?? '',
+        'notes': data['notes']?.toString() ?? '',
+      };
+      notifyListeners();
+    });
+
+    // Plan updated by admin — atualiza em tempo real
+    _socket!.on('premium:granted', (data) {
+      if (data is! Map) return;
+      final plan = data['plan']?.toString();
+      if (plan != null) {
+        _updatedPlan = plan;
         notifyListeners();
       }
     });

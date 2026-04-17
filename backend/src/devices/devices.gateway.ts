@@ -47,6 +47,13 @@ export class DevicesGateway implements OnGatewayConnection, OnGatewayDisconnect 
     private readonly config: ConfigService,
   ) {}
 
+  // ── Plan device limits ────────────────────────────────────────────────────
+  private readonly DEVICE_LIMITS: Record<string, number> = {
+    free:    1,
+    premium: 3,
+    family:  6,
+  };
+
   // ── Connection lifecycle ──────────────────────────────────────────────────
 
   async handleConnection(client: Socket) {
@@ -61,6 +68,16 @@ export class DevicesGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
       const socket = client as AuthSocket;
       socket.userId = payload.sub;
+
+      // Check device limit for plan
+      const user = await this.prisma.user.findUnique({ where: { id: payload.sub }, select: { plan: true } });
+      const limit = this.DEVICE_LIMITS[user?.plan ?? 'free'] ?? 1;
+      const activeCount = await this.prisma.device.count({ where: { userId: payload.sub, isActive: true } });
+      if (activeCount >= limit) {
+        client.emit('device:limit_reached', { limit, plan: user?.plan ?? 'free' });
+        client.disconnect();
+        return;
+      }
 
       // Detect device — prefer explicit X-Device-Type header over user-agent
       const ua = client.handshake.headers['user-agent'] ?? '';
@@ -248,6 +265,43 @@ export class DevicesGateway implements OnGatewayConnection, OnGatewayDisconnect 
   /** Send a notification to all active sockets of a specific user */
   notifyUser(userId: string, event: string, data: any) {
     this.server.to(`room:${userId}`).emit(event, data);
+  }
+
+  /** Broadcast to ALL connected users across all platforms */
+  broadcastGlobal(event: string, data: any) {
+    this.server.emit(event, data);
+  }
+
+  /** Emit a notification event to user (appears in notification bell) */
+  notifyUserNotification(userId: string, type: string, message: string, data?: any) {
+    this.notifyUser(userId, 'notif:received', {
+      type,
+      message,
+      timestamp: Date.now(),
+      ...data,
+    });
+  }
+
+  /** Emit new follower notification */
+  notifyNewFollower(userId: string, followerData: { id: string; name: string; username: string; avatarUrl?: string }) {
+    this.notifyUserNotification(userId, 'new_follower', `${followerData.name || '@' + followerData.username} começou a seguir você`, {
+      event: 'new_follower',
+      follower: followerData,
+    });
+  }
+
+  /** Emit plan updated notification */
+  notifyPlanUpdated(userId: string, newPlan: 'free' | 'premium' | 'family') {
+    const planNames = { free: 'Gratuito', premium: 'Premium', family: 'Família' };
+    this.notifyUserNotification(userId, 'plan_updated', `Seu plano foi atualizado para ${planNames[newPlan]}`, {
+      event: 'plan_updated',
+      newPlan,
+    });
+  }
+
+  /** Emit generic app broadcast notification */
+  notifyBroadcast(userId: string, message: string) {
+    this.notifyUserNotification(userId, 'app_broadcast', message, { event: 'app_broadcast' });
   }
 
   private async getRoomDevices(userId: string) {

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 
-import { API_URL as API } from '../config';
+import { API_URL as API, EXTRA_HEADERS } from '../config';
 
 type DownloadStatus = 'none' | 'downloading' | 'ready';
 
@@ -14,7 +14,8 @@ export function useDownloads(token: string, isPremium: boolean) {
   // Load existing downloads on mount
   useEffect(() => {
     if (!token || !isPremium) return;
-    fetch(`${API}/offline/list`, { headers: { Authorization: `Bearer ${token}` } })
+    const tok = (token && token !== 'authenticated') ? token : (sessionStorage.getItem('_om_access') ?? token);
+    fetch(`${API}/offline/list`, { headers: { Authorization: `Bearer ${tok}`, ...EXTRA_HEADERS } })
       .then(r => r.json())
       .then((data: any[]) => {
         const map: DownloadState = {};
@@ -33,9 +34,10 @@ export function useDownloads(token: string, isPremium: boolean) {
 
     setDownloads(prev => ({ ...prev, [songId]: 'downloading' }));
     try {
+      const tok = (token && token !== 'authenticated') ? token : (sessionStorage.getItem('_om_access') ?? token);
       const res = await fetch(`${API}/offline/mark/${songId}`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${tok}`, ...EXTRA_HEADERS },
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));

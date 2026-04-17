@@ -4,6 +4,7 @@ import '../api.dart';
 import '../theme.dart';
 import '../player/player_controller.dart';
 import '../widgets/song_card.dart';
+import 'user_profile_screen.dart';
 
 class SearchScreen extends StatefulWidget {
   final List<Song> songs;
@@ -15,7 +16,9 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   final _ctrl = TextEditingController();
-  List<Song> _results = [];
+  List<Song> _songs = [];
+  List<Map<String, dynamic>> _users = [];
+  List<Map<String, dynamic>> _albums = [];
   bool _searching = false;
   Timer? _debounce;
 
@@ -29,7 +32,7 @@ class _SearchScreenState extends State<SearchScreen> {
   void _onChanged(String q) {
     _debounce?.cancel();
     if (q.trim().isEmpty) {
-      setState(() { _results = []; _searching = false; });
+      setState(() { _songs = []; _users = []; _albums = []; _searching = false; });
       return;
     }
     _debounce = Timer(const Duration(milliseconds: 400), () => _search(q.trim()));
@@ -41,36 +44,43 @@ class _SearchScreenState extends State<SearchScreen> {
     try {
       final data = await Api.get('/search?q=${Uri.encodeComponent(q)}');
       if (!mounted) return;
-      if (data is List) {
+      if (data is Map) {
         setState(() {
-          _results = data.whereType<Map<String, dynamic>>().map(Song.fromJson).toList();
-          _searching = false;
-        });
-      } else if (data is Map && data['songs'] is List) {
-        setState(() {
-          _results = (data['songs'] as List).whereType<Map<String, dynamic>>().map(Song.fromJson).toList();
+          _songs = (data['songs'] as List? ?? [])
+              .whereType<Map<String, dynamic>>()
+              .map(Song.fromJson)
+              .toList();
+          _users = (data['users'] as List? ?? [])
+              .whereType<Map<String, dynamic>>()
+              .toList();
+          _albums = (data['albums'] as List? ?? [])
+              .whereType<Map<String, dynamic>>()
+              .toList();
           _searching = false;
         });
       } else {
-        // Fallback: local filter
+        // Fallback local
         final lower = q.toLowerCase();
         setState(() {
-          _results = widget.songs.where((s) =>
+          _songs = widget.songs.where((s) =>
             s.title.toLowerCase().contains(lower) ||
             (s.artist?.toLowerCase().contains(lower) ?? false)
           ).toList();
+          _users = [];
+          _albums = [];
           _searching = false;
         });
       }
     } catch (_) {
-      // Fallback to local search on error
       if (!mounted) return;
       final lower = q.toLowerCase();
       setState(() {
-        _results = widget.songs.where((s) =>
+        _songs = widget.songs.where((s) =>
           s.title.toLowerCase().contains(lower) ||
           (s.artist?.toLowerCase().contains(lower) ?? false)
         ).toList();
+        _users = [];
+        _albums = [];
         _searching = false;
       });
     }
@@ -79,6 +89,8 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     final isEmpty = _ctrl.text.isEmpty;
+    final hasResults = _songs.isNotEmpty || _users.isNotEmpty || _albums.isNotEmpty;
+
     return CustomScrollView(
       slivers: [
         SliverAppBar(
@@ -95,13 +107,13 @@ class _SearchScreenState extends State<SearchScreen> {
                 onChanged: _onChanged,
                 style: const TextStyle(color: kTextPrimary),
                 decoration: InputDecoration(
-                  hintText: 'O que você quer ouvir?',
+                  hintText: 'Músicas, artistas, álbuns, usuários...',
                   hintStyle: const TextStyle(color: kTextMuted),
                   prefixIcon: const Icon(Icons.search, color: kTextMuted),
                   suffixIcon: _ctrl.text.isNotEmpty
                     ? IconButton(
                         icon: const Icon(Icons.clear, color: kTextMuted, size: 18),
-                        onPressed: () { _ctrl.clear(); setState(() { _results = []; _searching = false; }); },
+                        onPressed: () { _ctrl.clear(); setState(() { _songs = []; _users = []; _albums = []; _searching = false; }); },
                       )
                     : null,
                   filled: true,
@@ -121,32 +133,71 @@ class _SearchScreenState extends State<SearchScreen> {
             child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
               const Icon(Icons.search, size: 64, color: kTextMuted),
               const SizedBox(height: 16),
-              Text('Busque por músicas ou artistas', style: Theme.of(context).textTheme.bodyMedium),
+              Text('Busque por músicas, artistas ou usuários', style: Theme.of(context).textTheme.bodyMedium),
             ])),
           )
-        else if (_results.isEmpty)
+        else if (!hasResults)
           SliverFillRemaining(
             child: Center(child: Text('Nenhum resultado para "${_ctrl.text}"',
               style: Theme.of(context).textTheme.bodyMedium)),
           )
         else
-          SliverPadding(
-            padding: const EdgeInsets.all(16),
-            sliver: SliverGrid(
-              delegate: SliverChildBuilderDelegate(
-                (ctx, i) => SongCard(
-                  song: _results[i],
-                  onTap: () => widget.player.play(_results[i], _results),
+          SliverList(
+            delegate: SliverChildListDelegate([
+              // ── Usuários ──────────────────────────────────────────────────
+              if (_users.isNotEmpty) ...[
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  child: Text('Usuários', style: TextStyle(color: kTextMuted, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1)),
                 ),
-                childCount: _results.length,
-              ),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2, childAspectRatio: 0.75, crossAxisSpacing: 12, mainAxisSpacing: 12,
-              ),
-            ),
-          ),
+                ..._users.map((u) => ListTile(
+                  leading: CircleAvatar(
+                    radius: 22,
+                    backgroundColor: const Color(0xFF2A2A2A),
+                    backgroundImage: u['avatarUrl'] != null ? NetworkImage(u['avatarUrl']) : null,
+                    child: u['avatarUrl'] == null
+                      ? Text((u['name'] ?? u['username'] ?? '?')[0].toUpperCase(),
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700))
+                      : null,
+                  ),
+                  title: Text(u['name'] ?? u['username'] ?? '?',
+                    style: const TextStyle(color: kTextPrimary, fontWeight: FontWeight.w600)),
+                  subtitle: u['username'] != null
+                    ? Text('@${u['username']}', style: const TextStyle(color: kTextMuted, fontSize: 12))
+                    : null,
+                  trailing: const Icon(Icons.chevron_right, color: kTextMuted),
+                  onTap: () => Navigator.push(context, MaterialPageRoute(
+                    builder: (_) => UserProfileScreen(userId: u['id'], player: widget.player),
+                  )),
+                )),
+              ],
 
-        const SliverPadding(padding: EdgeInsets.only(bottom: 160)),
+              // ── Músicas ───────────────────────────────────────────────────
+              if (_songs.isNotEmpty) ...[
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  child: Text('Músicas', style: TextStyle(color: kTextMuted, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2, childAspectRatio: 0.75, crossAxisSpacing: 12, mainAxisSpacing: 12,
+                    ),
+                    itemCount: _songs.length,
+                    itemBuilder: (ctx, i) => SongCard(
+                      song: _songs[i],
+                      onTap: () => widget.player.play(_songs[i], _songs),
+                    ),
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 160),
+            ]),
+          ),
       ],
     );
   }

@@ -13,6 +13,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _emailCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
+  final _usernameCtrl = TextEditingController();
   bool _loading = false;
   String? _error;
   bool _register = false;
@@ -29,10 +30,19 @@ class _LoginScreenState extends State<LoginScreen> {
     });
     try {
       final path = _register ? '/auth/register' : '/auth/login';
-      final data = await Api.post(path, {
+      final body = <String, dynamic>{
         'email': _emailCtrl.text.trim(),
         'password': _passCtrl.text,
-      });
+      };
+      if (_register) {
+        final u = _usernameCtrl.text.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9_.]'), '');
+        if (u.length < 3) {
+          setState(() { _error = 'Username deve ter pelo menos 3 caracteres.'; _loading = false; });
+          return;
+        }
+        body['username'] = u;
+      }
+      final data = await Api.post(path, body);
       final token = data?['access_token']?.toString();
       final refresh = data?['refresh_token']?.toString();
       if (token != null) await Api.saveTokens(token, refresh);
@@ -94,6 +104,15 @@ class _LoginScreenState extends State<LoginScreen> {
               keyboardType: TextInputType.emailAddress,
             ),
             const SizedBox(height: 14),
+            if (_register) ...[
+              _InputField(
+                controller: _usernameCtrl,
+                label: '@username',
+                icon: Icons.alternate_email,
+                keyboardType: TextInputType.text,
+              ),
+              const SizedBox(height: 14),
+            ],
             _PasswordField(
               controller: _passCtrl,
               label: 'Senha',

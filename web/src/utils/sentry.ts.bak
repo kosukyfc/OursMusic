@@ -1,0 +1,44 @@
+import * as Sentry from '@sentry/react';
+import { ConfigService } from '../config';
+
+export const initSentry = () => {
+  const config = ConfigService.getInstance();
+  
+  if (!config.sentryDsn) {
+    console.log('Sentry DSN not configured');
+    return;
+  }
+
+  Sentry.init({
+    dsn: config.sentryDsn,
+    environment: config.nodeEnv,
+    tracesSampleRate: 1.0,
+    integrations: [
+      new Sentry.Replay({
+        maskAllText: true,
+        blockAllMedia: true,
+      }),
+    ],
+    replaysSessionSampleRate: 0.1,
+    replaysOnErrorSampleRate: 1.0,
+  });
+
+  console.log('✓ Sentry initialized');
+};
+
+// Error tracking wrapper
+export const trackError = (error: Error, context?: Record<string, any>) => {
+  Sentry.captureException(error, {
+    contexts: {
+      custom: context || {},
+    },
+  });
+};
+
+// Performance monitoring
+export const startTransaction = (name: string) => {
+  return Sentry.startTransaction({
+    name,
+    op: 'http.request',
+  });
+};

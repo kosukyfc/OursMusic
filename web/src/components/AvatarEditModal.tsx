@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { API_URL as API } from '../config';
+import { API_URL as API, EXTRA_HEADERS } from '../config';
 import { ImagePositioner } from './ImagePositioner';
 
 interface Props {
@@ -40,7 +40,7 @@ export function AvatarEditModal({ token, currentUrl, onSaved, onClose }: Props) 
         if (!urlInput.trim()) { setError('Insira uma URL válida'); setLoading(false); return; }
         const res = await fetch(`${API}/social/profile`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...EXTRA_HEADERS },
           body: JSON.stringify({ avatarUrl: urlInput.trim() }),
         });
         if (!res.ok) throw new Error((await res.json()).message);
@@ -49,16 +49,43 @@ export function AvatarEditModal({ token, currentUrl, onSaved, onClose }: Props) 
       } else {
         const blob = croppedBlob;
         if (!blob) { setError('Selecione e ajuste uma imagem'); setLoading(false); return; }
-        const fd = new FormData();
-        fd.append('file', blob, 'avatar.jpg');
-        const res = await fetch(`${API}/social/profile/avatar`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-          body: fd,
-        });
-        if (!res.ok) throw new Error((await res.json()).message);
-        const data = await res.json();
-        onSaved(data.avatarUrl);
+
+        // Tenta upload multipart no S3 primeiro; se falhar (S3 não configurado em dev),
+        // converte para base64 e salva direto no perfil
+        let avatarUrl: string | null = null;
+        try {
+          const fd = new FormData();
+          fd.append('file', blob, 'avatar.jpg');
+          const res = await fetch(`${API}/social/profile/avatar`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            credentials: 'include',
+            body: fd,
+          });
+          if (res.ok) {
+            const data = await res.json();
+            avatarUrl = data.avatarUrl;
+          }
+        } catch { /* S3 indisponível — usa fallback base64 */ }
+
+        if (!avatarUrl) {
+          // Fallback: converte para base64 e salva como data URL no perfil
+          const reader = new FileReader();
+          avatarUrl = await new Promise<string>((resolve, reject) => {
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          const res = await fetch(`${API}/social/profile`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...EXTRA_HEADERS },
+            credentials: 'include',
+            body: JSON.stringify({ avatarUrl }),
+          });
+          if (!res.ok) throw new Error((await res.json()).message ?? 'Erro ao salvar avatar');
+        }
+
+        onSaved(avatarUrl);
       }
       onClose();
     } catch (e: any) {

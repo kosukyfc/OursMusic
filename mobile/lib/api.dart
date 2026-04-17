@@ -1,45 +1,62 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-const kApiBase = String.fromEnvironment('API_URL', defaultValue: 'http://192.168.15.3:3000');
+// ngrok (comentado - usando apenas localhost):
+// const kApiBase = String.fromEnvironment('API_URL', defaultValue: 'https://12f6-2804-1b3-9442-8fb8-386d-8514-f011-228f.ngrok-free.app');
+
+const kApiBase = String.fromEnvironment('API_URL', defaultValue: 'http://localhost:3000');
 const _deviceType = String.fromEnvironment('DEVICE_TYPE', defaultValue: 'mobile');
+const _adminSecret = String.fromEnvironment('ADMIN_SECRET', defaultValue: '');
+
+// Armazenamento seguro para tokens — criptografado no Keychain (iOS) / Keystore (Android)
+const _secureStorage = FlutterSecureStorage(
+  aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
+);
+
+const _kAccessToken  = 'om_access';
+const _kRefreshToken = 'om_refresh';
 
 class Api {
+  // Tokens em memória — nunca acessíveis por outras apps
   static String? _token;
   static String? _refreshToken;
 
   static Future<void> init() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      _token = prefs.getString('token');
-      _refreshToken = prefs.getString('refresh_token');
+      _token        = await _secureStorage.read(key: _kAccessToken);
+      _refreshToken = await _secureStorage.read(key: _kRefreshToken);
     } catch (e) {
       debugPrint('Api.init error: $e');
+      _token = null;
+      _refreshToken = null;
     }
   }
 
   static Future<void> saveTokens(String access, String? refresh) async {
-    _token = access;
+    _token        = access;
     _refreshToken = refresh;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('token', access);
-      if (refresh != null) await prefs.setString('refresh_token', refresh);
-    } catch (_) {}
+      await _secureStorage.write(key: _kAccessToken, value: access);
+      if (refresh != null) {
+        await _secureStorage.write(key: _kRefreshToken, value: refresh);
+      }
+    } catch (e) {
+      debugPrint('Api.saveTokens error: $e');
+    }
   }
 
-  /// Kept for backwards compat
   static Future<void> saveToken(String token) => saveTokens(token, null);
 
   static Future<void> clearToken() async {
-    _token = null;
+    _token        = null;
     _refreshToken = null;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('token');
-      await prefs.remove('refresh_token');
+      await _secureStorage.delete(key: _kAccessToken);
+      await _secureStorage.delete(key: _kRefreshToken);
     } catch (_) {}
   }
 
@@ -49,7 +66,10 @@ class Api {
   static Map<String, String> get _headers => {
     'Content-Type': 'application/json',
     'X-Device-Type': _deviceType,
+    // ngrok header (comentado - localhost only):
+    // 'bypass-tunnel-reminder': 'true',
     if (_token != null) 'Authorization': 'Bearer $_token',
+    if (_adminSecret.isNotEmpty) 'X-Admin-Token': _adminSecret,
   };
 
   /// Try to refresh the access token using the stored refresh token.
@@ -107,6 +127,20 @@ class Api {
         .timeout(const Duration(seconds: 15));
     if (res.statusCode == 401 && await _tryRefresh()) {
       res = await http.patch(Uri.parse('$kApiBase$path'), headers: _headers, body: jsonEncode(body))
+          .timeout(const Duration(seconds: 15));
+    }
+    if (res.statusCode >= 400) {
+      final b = _tryDecode(res.body);
+      throw Exception(b?['message'] ?? res.reasonPhrase ?? 'Error ${res.statusCode}');
+    }
+    return _tryDecode(res.body);
+  }
+
+  static Future<dynamic> put(String path, Map<String, dynamic> body) async {
+    var res = await http.put(Uri.parse('$kApiBase$path'), headers: _headers, body: jsonEncode(body))
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode == 401 && await _tryRefresh()) {
+      res = await http.put(Uri.parse('$kApiBase$path'), headers: _headers, body: jsonEncode(body))
           .timeout(const Duration(seconds: 15));
     }
     if (res.statusCode >= 400) {

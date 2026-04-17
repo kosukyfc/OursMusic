@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { API_URL as API } from '../config';
+import { API_URL as API, EXTRA_HEADERS } from '../config';
 import { ImagePositioner } from './ImagePositioner';
 
 interface Props {
@@ -40,7 +40,7 @@ export function CoverEditModal({ token, currentUrl, onSaved, onClose }: Props) {
         if (!urlInput.trim()) { setError('Insira uma URL válida'); setLoading(false); return; }
         const res = await fetch(`${API}/social/profile`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...EXTRA_HEADERS },
           body: JSON.stringify({ coverUrl: urlInput.trim() }),
         });
         if (!res.ok) throw new Error((await res.json()).message);
@@ -48,22 +48,43 @@ export function CoverEditModal({ token, currentUrl, onSaved, onClose }: Props) {
       } else {
         const blob = croppedBlob;
         if (!blob) { setError('Selecione e ajuste uma imagem'); setLoading(false); return; }
-        const fd = new FormData();
-        fd.append('file', blob, 'cover.jpg');
-        // Upload via avatar endpoint e salva como coverUrl
-        const res = await fetch(`${API}/social/profile/avatar`, {
+
+        // Tenta upload multipart no S3 primeiro; se falhar (S3 não configurado em dev),
+        // converte para base64 e salva direto no perfil
+        let coverUrl: string | null = null;
+        try {
+          const fd = new FormData();
+          fd.append('file', blob, 'cover.jpg');
+          const res = await fetch(`${API}/social/profile/avatar`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            credentials: 'include',
+            body: fd,
+          });
+          if (res.ok) {
+            const data = await res.json();
+            coverUrl = data.avatarUrl;
+          }
+        } catch { /* S3 indisponível — usa fallback base64 */ }
+
+        if (!coverUrl) {
+          // Fallback: converte para base64 e salva como data URL no perfil
+          const reader = new FileReader();
+          coverUrl = await new Promise<string>((resolve, reject) => {
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        }
+
+        const res = await fetch(`${API}/social/profile`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-          body: fd,
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...EXTRA_HEADERS },
+          credentials: 'include',
+          body: JSON.stringify({ coverUrl }),
         });
-        if (!res.ok) throw new Error((await res.json()).message);
-        const data = await res.json();
-        await fetch(`${API}/social/profile`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ coverUrl: data.avatarUrl }),
-        });
-        onSaved(data.avatarUrl);
+        if (!res.ok) throw new Error((await res.json()).message ?? 'Erro ao salvar capa');
+        onSaved(coverUrl);
       }
       onClose();
     } catch (e: any) {
@@ -127,7 +148,7 @@ export function CoverEditModal({ token, currentUrl, onSaved, onClose }: Props) {
                   {croppedBlob ? '✅ Imagem ajustada — clique para trocar' : '📂 Selecionar imagem (JPG, PNG, WebP)'}
                 </button>
                 {croppedBlob && (
-                  <button onClick={() => setRawSrc(preview ?? '')} style={{
+                  <button onClick={() => { setCroppedBlob(null); setRawSrc(preview ?? ''); }} style={{
                     background: 'none', color: '#1db954', fontSize: 12, textAlign: 'left',
                   }}>
                     ✏️ Reajustar posição

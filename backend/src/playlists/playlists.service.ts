@@ -20,7 +20,8 @@ export class PlaylistsService {
 
   async create(userId: string, dto: CreatePlaylistDto) {
     return this.prisma.playlist.create({
-      data: { userId, title: dto.title, isPublic: dto.isPublic ?? false },
+      data: { userId, title: dto.title, isPublic: dto.isPublic ?? false, coverUrl: dto.coverUrl },
+      include: { songs: { orderBy: { position: 'asc' }, include: { song: true } } },
     });
   }
 

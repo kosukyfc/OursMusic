@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/guards';
 import { StorageModule } from './storage/storage.module';
 import { SongsModule } from './songs/songs.module';
+import { GenresModule } from './genres/genres.module';
 import { ImportModule } from './import/import.module';
 import { PlaylistsModule } from './playlists/playlists.module';
 import { FavoritesModule } from './favorites/favorites.module';
@@ -22,6 +23,19 @@ import { AppUpdateModule } from './app-update/app-update.module';
 import { InteractionsModule } from './interactions/interactions.module';
 import { SocialModule } from './social/social.module';
 import { DevicesModule } from './devices/devices.module';
+import { ArtistsModule } from './artists/artists.module';
+import { DeployModule } from './deploy/deploy.module';
+import { FamilyModule } from './family/family.module';
+import { HealthModule } from './common/health/health.module';
+import { LyricsModule } from './lyrics/lyrics.module';
+import { RecommendationsModule } from './recommendations/recommendations.module';
+import { VersioningModule } from './common/versioning/versioning.module';
+// PHASE 6 Feature Modules
+import { HeatmapModule } from './heatmap/heatmap.module';
+import { MusicTheoryModule } from './songs/music-theory.module';
+import { SetlistPersistenceModule } from './playlists/setlist-persistence.module';
+import { UserPreferencesModule } from './storage/user-preferences.module';
+import { AudioModule } from './audio/audio.module';
 
 @Module({
   imports: [
@@ -29,18 +43,32 @@ import { DevicesModule } from './devices/devices.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    // TODO: Enable CacheModule when redis dependencies are resolved
+    // CacheModule,
     EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
-        ttl: 60000, // 1 minute in ms
-        limit: 100,
+        name: 'short',
+        ttl: 1000,   // 1 segundo
+        limit: 5,    // máx 5 req/s por IP
+      },
+      {
+        name: 'medium',
+        ttl: 60000,  // 1 minuto
+        limit: 100,  // máx 100 req/min por IP
+      },
+      {
+        name: 'long',
+        ttl: 3600000, // 1 hora
+        limit: 1000,  // máx 1000 req/h por IP
       },
     ]),
     PrismaModule,
     AuthModule,
     StorageModule,
     SongsModule,
+    GenresModule,
     ImportModule,
     PlaylistsModule,
     FavoritesModule,
@@ -52,8 +80,26 @@ import { DevicesModule } from './devices/devices.module';
     SpotifyModule,
     SocialModule,
     DevicesModule,
+    ArtistsModule,
     AppUpdateModule,
     InteractionsModule,
+    DeployModule,
+    FamilyModule,
+    HealthModule,
+    VersioningModule,
+    LyricsModule,
+    RecommendationsModule,
+    // PHASE 6: Heatmap + Music Theory + Setlist + User Preferences + Audio Features
+    HeatmapModule,
+    MusicTheoryModule,
+    SetlistPersistenceModule,
+    UserPreferencesModule,
+    AudioModule,
+    // TODO: Enable when schema is ready
+    // CollaborativePlaylistsModule,
+    // TODO: Enable when prom-client is installed
+    // MetricsModule,
+    // PerformanceModule,
   ],
   providers: [
     {

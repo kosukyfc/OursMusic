@@ -54,6 +54,7 @@ model User {
   googleAccessToken  String? @map("google_access_token")
   googleRefreshToken String? @map("google_refresh_token")
   premiumExpiresAt   DateTime? @map("premium_expires_at")
+  flair              Json?     @default("{}")
   createdAt      DateTime    @default(now()) @map("created_at")
   updatedAt      DateTime    @updatedAt @map("updated_at")
 
@@ -63,12 +64,29 @@ model User {
   favorites      Favorite[]
   uploadedSongs  Song[]
   refreshTokens  RefreshToken[]
+  passwordResets PasswordResetToken[]
   following      Follow[]    @relation("follower")
   followers      Follow[]    @relation("following")
   songLikes      SongLike[]
   songComments   SongComment[]
+  familyOwned    FamilyGroup?    @relation("FamilyOwner")
+  familyMemberships FamilyMember[] @relation("FamilyMemberships")
 
   @@map("users")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
 }
 
 model Follow {
@@ -104,7 +122,8 @@ model Artist {
   imageUrl  String?  @map("image_url")
   createdAt DateTime @default(now()) @map("created_at")
 
-  albums Album[]
+  albums  Album[]
+  genres  ArtistGenre[]
 
   @@map("artists")
 }
@@ -145,7 +164,10 @@ model Song {
   previewUrl  String?     @map("preview_url")
   lyrics      String?
   lyricsSynced String?    @map("lyrics_synced")
+  videoUrl    String?     @map("video_url")
   playCount   Int         @default(0) @map("play_count")
+  beatTimestamps String?  @map("beat_timestamps")  // JSON array of beat times in ms
+  waveformData   String?  @map("waveform_data")    // JSON array of 200 amplitude samples [0..1]
   createdAt   DateTime    @default(now()) @map("created_at")
   updatedAt   DateTime    @updatedAt @map("updated_at")
 
@@ -157,8 +179,15 @@ model Song {
   favorites     Favorite[]
   likes         SongLike[]
   comments      SongComment[]
+  genres        GenreSong[]
 
   @@index([storagePath])
+  @@index([uploadedBy, createdAt(sort: Desc)])
+  @@index([genre])
+  @@index([artist])
+  @@index([title])
+  @@index([popularity(sort: Desc)])
+  @@index([playCount(sort: Desc)])
   @@map("songs")
 }
 
@@ -166,6 +195,7 @@ model Playlist {
   id        String   @id @default(uuid())
   userId    String   @map("user_id")
   title     String
+  coverUrl  String?  @map("cover_url")
   isPublic  Boolean  @default(false) @map("is_public")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -173,6 +203,9 @@ model Playlist {
   user  User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   songs PlaylistSong[]
 
+  @@index([userId])
+  @@index([isPublic])
+  @@index([userId, createdAt(sort: Desc)])
   @@map("playlists")
 }
 
@@ -186,6 +219,7 @@ model PlaylistSong {
   song     Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
 
   @@id([playlistId, songId])
+  @@index([songId])
   @@map("playlist_songs")
 }
 
@@ -265,6 +299,46 @@ enum LikeType {
   dislike
 }
 
+// ─── Genre Support (Many-to-many) ───────────────────────────────────────────
+
+model Genre {
+  id          String      @id @default(uuid())
+  name        String      @unique
+  description String?
+  coverUrl    String?     @map("cover_url")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  songs   GenreSong[]
+  artists ArtistGenre[]
+
+  @@map("genres")
+}
+
+model GenreSong {
+  genreId String @map("genre_id")
+  songId  String @map("song_id")
+
+  genre Genre @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  song  Song  @relation(fields: [songId], references: [id], onDelete: Cascade)
+
+  @@id([genreId, songId])
+  @@index([songId])
+  @@map("genre_songs")
+}
+
+model ArtistGenre {
+  genreId String @map("genre_id")
+  artistId String @map("artist_id")
+
+  genre  Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  artist Artist @relation(fields: [artistId], references: [id], onDelete: Cascade)
+
+  @@id([genreId, artistId])
+  @@index([artistId])
+  @@map("artist_genres")
+}
+
 // ─── Device Connect / Multi-room ─────────────────────────────────────────────
 
 model Device {
@@ -296,9 +370,177 @@ model PlaybackSession {
   @@map("playback_sessions")
 }
 
+// ─── Lyrics (Karaokê Premium) ─────────────────────────────────────────────────
+
+model LyricsPremium {
+  id            String   @id @default(uuid())
+  trackId       String   @unique @map("track_id")
+  title         String
+  artist        String
+  content       Json                                      // LyricsData JSON
+  source        String   @default("user")                // 'genius' | 'musixmatch' | 'user' | 'api'
+  language      String   @default("pt-BR")
+  hasWordSync   Boolean  @default(false) @map("has_word_sync")
+  bpm           Int?
+  albumArt      String?  @map("album_art")
+  duration      Int                                       // in milliseconds
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([trackId])
+  @@index([source])
+  @@map("lyrics_premium")
+}
+
 enum DeviceType {
   browser
   mobile
   speaker
   tv
+}
+
+// ─── Family Group ─────────────────────────────────────────────────────────────
+
+model FamilyGroup {
+  id        String   @id @default(uuid())
+  ownerId   String   @unique @map("owner_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  owner   User              @relation("FamilyOwner",  fields: [ownerId],  references: [id], onDelete: Cascade)
+  members FamilyMember[]
+
+  @@map("family_groups")
+}
+
+model FamilyMember {
+  id        String   @id @default(uuid())
+  groupId   String   @map("group_id")
+  userId    String   @map("user_id")
+  joinedAt  DateTime @default(now()) @map("joined_at")
+
+  group FamilyGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User        @relation("FamilyMemberships", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([userId])
+  @@map("family_members")
+}
+
+// ─── PHASE 6: Listening Heatmap ───────────────────────────────────────────────
+
+model ListeningHeatmap {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  dayOfWeek Int      @map("day_of_week") // 0-6 (Mon-Sun)
+  hour      Int      // 0-23
+  count     Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, dayOfWeek, hour])
+  @@index([userId])
+  @@map("listening_heatmaps")
+}
+
+// ─── PHASE 6: Music Theory Analyzer ───────────────────────────────────────────
+
+model MusicTheoryAnalysis {
+  id          String   @id @default(uuid())
+  songId      String   @map("song_id")
+  bpm         Int      // 60-180
+  key         String   // C, C#, D, etc
+  scale       String   // Major, Minor
+  energy      Float    // 0-1
+  danceability Float   // 0-1
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([songId])
+  @@index([songId])
+  @@map("music_theory_analyses")
+}
+
+// ─── PHASE 6: Similar Artists ────────────────────────────────────────────────
+
+model ArtistRelationship {
+  id             String   @id @default(uuid())
+  artistId       String   @map("artist_id")
+  relatedArtistId String  @map("related_artist_id")
+  similarity     Float    // 0-1 score
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([artistId, relatedArtistId])
+  @@index([artistId])
+  @@map("artist_relationships")
+}
+
+// ─── PHASE 6: Smart Queue ────────────────────────────────────────────────────
+
+model ListeningHistory {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  songId    String   @map("song_id")
+  playedAt  DateTime @default(now()) @map("played_at")
+  duration  Int      // ms
+  completed Boolean  @default(false)
+
+  @@index([userId])
+  @@index([playedAt])
+  @@map("listening_histories")
+}
+
+model SmartQueueSuggestion {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  songId    String   @map("song_id")
+  mood      String   // happy, sad, energetic, chill
+  score     Float    // 0-1 relevance
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("smart_queue_suggestions")
+}
+
+// ─── PHASE 6: Setlist Persistence ────────────────────────────────────────────
+
+model Setlist {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  songs SetlistSong[]
+
+  @@index([userId])
+  @@map("setlists")
+}
+
+model SetlistSong {
+  id        String   @id @default(uuid())
+  setlistId String   @map("setlist_id")
+  songId    String   @map("song_id")
+  order     Int
+  addedAt   DateTime @default(now()) @map("added_at")
+
+  setlist Setlist @relation(fields: [setlistId], references: [id], onDelete: Cascade)
+
+  @@unique([setlistId, songId])
+  @@index([setlistId])
+  @@map("setlist_songs")
+}
+
+// ─── PHASE 6: User Preferences ───────────────────────────────────────────────
+
+model UserPreferences {
+  id              String   @id @default(uuid())
+  userId          String   @unique @map("user_id")
+  fontSize        Float    @default(16.0) @map("font_size")
+  lineHeight      Float    @default(1.5) @map("line_height")
+  letterSpacing   Float    @default(0.0) @map("letter_spacing")
+  dyslexiaFont    Boolean  @default(false) @map("dyslexia_font")
+  dyslexiaContrast Int     @default(0) @map("dyslexia_contrast") // 0-2
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("user_preferences")
 }

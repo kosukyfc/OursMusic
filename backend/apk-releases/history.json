@@ -1,0 +1,16 @@
+[
+  {
+    "version": "1.0.7",
+    "mobileUrl": "http://192.168.100.4:3000/app/download/mobile",
+    "tvUrl": "http://192.168.100.4:3000/app/download/tv",
+    "notes": "Mobile, agora tem um card \"📝 Notas de Atualização — Versão Atual\" onde você:\r\n\r\nDigita as notas (suporta emojis e quebras de linha)\r\nClica Salvar Notas — salva sem precisar subir APK\r\nBotão Carregar notas atuais para editar o que já está publicado\r\nAs notas aparecem para os usuários no dialog de changelog que abre automaticamente quando eles abrem o app após uma atualização (web e mobile).",
+    "releasedAt": "2026-04-11T03:33:58.245Z"
+  },
+  {
+    "version": "1.0.6",
+    "mobileUrl": "http://192.168.100.4:3000/app/download/mobile",
+    "tvUrl": "http://192.168.100.4:3000/app/download/tv",
+    "notes": "Criado UpdateService que busca GET /app/version ao abrir o app\r\nCompara com a última versão vista (salva em SharedPreferences)\r\nSe for versão nova, exibe um bottom sheet elegante com o nome da versão e as notas de atualização\r\nSó aparece uma vez por versão — na próxima abertura não mostra mais\r\nSilencioso em caso de erro de rede.",
+    "releasedAt": "2026-04-09T21:26:55.413Z"
+  }
+]

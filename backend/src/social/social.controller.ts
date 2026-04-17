@@ -54,6 +54,11 @@ export class SocialController {
     return this.socialService.updateProfile(req.user.userId, body);
   }
 
+  @Get('feed')
+  getFriendActivity(@Req() req: AuthReq, @Query('limit') limit?: string) {
+    return this.socialService.getFriendActivity(req.user.userId, limit ? parseInt(limit) : 30);
+  }
+
   @Post('profile/avatar')
   @UseInterceptors(FileInterceptor('file'))
   async uploadAvatar(

@@ -1,7 +1,7 @@
 {
-  "version": "1.0.5",
-  "mobileUrl": "https://oursmusics.shop/api/app/download/mobile",
-  "tvUrl": "https://oursmusics.shop/api/app/download/tv",
-  "notes": "Versão 1.0.5 — Carrosséis por álbum, player persistente, melhorias de performance",
-  "releasedAt": "2026-04-06T00:00:00.000Z"
+  "version": "1.0.7",
+  "mobileUrl": "http://192.168.100.4:3000/app/download/mobile",
+  "tvUrl": "http://192.168.100.4:3000/app/download/tv",
+  "notes": "Mobile, agora tem um card \"📝 Notas de Atualização — Versão Atual\" onde você:\r\n\r\nDigita as notas (suporta emojis e quebras de linha)\r\nClica Salvar Notas — salva sem precisar subir APK\r\nBotão Carregar notas atuais para editar o que já está publicado\r\nAs notas aparecem para os usuários no dialog de changelog que abre automaticamente quando eles abrem o app após uma atualização (web e mobile).",
+  "releasedAt": "2026-04-11T03:33:58.245Z"
 }

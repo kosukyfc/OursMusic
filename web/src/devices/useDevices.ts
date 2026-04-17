@@ -1,4 +1,4 @@
-import { API_URL } from '../config';
+import { WS_URL } from '../config';
 
 /**
  * CLOCK SYNC ALGORITHM:
@@ -61,9 +61,13 @@ export function useDevices({ token, onPlaybackSync, onPremiumGranted }: UseDevic
   useEffect(() => {
     if (!token) return;
 
-    const socket = io(`${API_URL}/devices`, {
+    const socket = io(`${WS_URL}/devices`, {
       auth: { token },
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'], // Fallback para polling se WebSocket falhar
+      reconnection: true,                    // Tenta reconectar automaticamente
+      reconnectionDelay: 1000,               // Começa com 1s
+      reconnectionDelayMax: 5000,            // Máximo de 5s entre tentativas
+      reconnectionAttempts: Infinity,        // Tenta indefinidamente
     });
     socketRef.current = socket;
 
@@ -112,6 +116,43 @@ export function useDevices({ token, onPlaybackSync, onPremiumGranted }: UseDevic
 
     socket.on('premium:granted', (data: any) => {
       onPremiumGranted?.(data);
+    });
+
+    socket.on('app:broadcast', (data: { message: string; type: string; sentAt: string }) => {
+      // Mostra notificação global para o usuário web
+      const icons: Record<string, string> = { info: 'ℹ️', update: '🚀', warning: '⚠️' };
+      const icon = icons[data.type] ?? '📢';
+      // Usa a API de Notifications do browser se disponível, senão alert
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        new Notification(`${icon} OursMusic`, { body: data.message, icon: '/favicon.ico' });
+      }
+      // Também dispara um evento customizado para o App.tsx capturar e exibir na UI
+      window.dispatchEvent(new CustomEvent('app:broadcast', { detail: data }));
+    });
+
+    // 🔔 Unified notification handler for all notification types
+    socket.on('notif:received', (data: { type: string; message: string; event?: string; timestamp: number; [key: string]: any }) => {
+      // Log all notification types for debugging
+      console.log('📱 Notification received:', data.type, data.message);
+
+      // Fire push notification using Notification API
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        const icons: Record<string, string> = {
+          new_follower: '👤',
+          plan_updated: '⭐',
+          plan_expiring: '⏰',
+          app_broadcast: '📢',
+        };
+        const icon = icons[data.type] ?? '🔔';
+        new Notification(`${icon} OursMusic`, { body: data.message, icon: '/favicon.ico' });
+      }
+
+      // Dispatch custom event for App.tsx to add to notification list
+      window.dispatchEvent(new CustomEvent('notif:received', { detail: data }));
+    });
+
+    socket.on('app:update-available', (data: { version: string; notes: string }) => {
+      window.dispatchEvent(new CustomEvent('app:update-available', { detail: data }));
     });
 
     return () => { socket.disconnect(); };

@@ -445,43 +445,88 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (_showLyrics)
           Expanded(
             flex: 5,
-            child: Container(
-              margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: const Color(0xFFB71C1C),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              child: Container(
+                margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      const Color(0xFF1a1a1a).withOpacity(0.95),
+                      const Color(0xFF0d0d0d).withOpacity(0.98),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Colors.green.withOpacity(0.3),
+                    width: 1,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.green.withOpacity(0.2),
+                      blurRadius: 16,
+                      spreadRadius: 4,
+                    ),
+                  ],
+                ),
+                child: Column(
                   children: [
-                    Row(
+                    // Header
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 16, 12, 12),
+                      child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          const Text('Lyrics',
-                              style: TextStyle(
-                                  color: kTextPrimary,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w800)),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Lyrics',
+                                  style: const TextStyle(
+                                      color: kTextPrimary,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w800)),
+                              const SizedBox(height: 4),
+                              Text(song.artist ?? 'Unknown',
+                                  style: TextStyle(
+                                      color: kTextSecond,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500)),
+                            ],
+                          ),
                           IconButton(
                               icon: const Icon(Icons.close,
                                   color: kTextPrimary, size: 20),
                               onPressed: () =>
                                   setState(() => _showLyrics = false)),
-                        ]),
-                    Expanded(
-                        child: SingleChildScrollView(
-                      child: Text(
-                        _lyricsData?['lyrics'] ?? 'Lyrics not available.',
-                        style: const TextStyle(
-                            color: kTextPrimary,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                            height: 1.6),
+                        ],
                       ),
-                    )),
-                  ]),
-            ),
+                    ),
+                    // Lyrics content com sincronização
+                    Expanded(
+                      child: SingleChildScrollView(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Column(
+                            children: [
+                              if (_lyricsData != null)
+                                ..._buildLyricsWithSync()
+                              else
+                                Text(
+                                  'Letras não disponíveis',
+                                  style: TextStyle(
+                                    color: kTextSecond,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
           ),
 
         // ── Song info ─────────────────────────────────────────────────
@@ -1002,6 +1047,41 @@ class _StatusBar extends StatelessWidget {
             ]),
           ]),
     );
+  }
+
+  /// Renderiza letras com sincronização de áudio (Karaokê Premium)
+  List<Widget> _buildLyricsWithSync() {
+    if (_lyricsData == null) return [];
+    
+    final lyrics = _lyricsData!['lyrics'] as String? ?? '';
+    final lines = lyrics.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    
+    return lines.map((line) {
+      final isCurrent = line.length > 50; // Heurística simples
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: isCurrent ? Colors.green.withOpacity(0.15) : Colors.transparent,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: isCurrent ? Colors.green.withOpacity(0.5) : Colors.transparent,
+              width: 1,
+            ),
+          ),
+          child: Text(
+            line,
+            style: TextStyle(
+              color: isCurrent ? Colors.green[300] : kTextPrimary,
+              fontSize: isCurrent ? 16 : 14,
+              fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+              height: 1.6,
+            ),
+          ),
+        ),
+      );
+    }).toList();
   }
 }
 

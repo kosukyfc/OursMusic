@@ -64,6 +64,264 @@ export class MagicImportService {
     this.progressSubs.get(p.jobId)?.forEach(cb => cb(p));
   }
 
+  // ── Deezer artist top tracks search ──────────────────────────────────────
+
+  async deezerSearchArtistTracks(artistName: string, limit = 50): Promise<{ id: string; title: string; artist: string; album: string; coverUrl: string; durationMs: number }[]> {
+    // 1. Find artist
+    const searchRes = await fetch(`${this.DEEZER}/search/artist?q=${encodeURIComponent(artistName)}&limit=1`);
+    const searchData = await searchRes.json();
+    if (!searchData.data?.length) return [];
+
+    const artistId = searchData.data[0].id;
+
+    // 2. Get top tracks
+    const tracksRes = await fetch(`${this.DEEZER}/artist/${artistId}/top?limit=${limit}`);
+    const tracksData = await tracksRes.json();
+    if (!tracksData.data?.length) return [];
+
+    return tracksData.data.map((t: any) => ({
+      id: String(t.id),
+      title: t.title ?? '',
+      artist: t.artist?.name ?? artistName,
+      album: t.album?.title ?? '',
+      coverUrl: t.album?.cover_xl ?? t.album?.cover_big ?? t.album?.cover ?? '',
+      durationMs: (t.duration ?? 0) * 1000,
+    }));
+  }
+
+  // ── Deezer: list all albums of an artist ─────────────────────────────────
+
+  async deezerGetArtistAlbums(artistName: string): Promise<{ id: string; title: string; coverUrl: string; releaseDate: string; trackCount: number; alreadyImported?: boolean }[]> {
+    const searchRes = await fetch(`${this.DEEZER}/search/artist?q=${encodeURIComponent(artistName)}&limit=1`);
+    const searchData = await searchRes.json();
+    if (!searchData.data?.length) return [];
+
+    const artistId = searchData.data[0].id;
+    const albumsRes = await fetch(`${this.DEEZER}/artist/${artistId}/albums?limit=100`);
+    const albumsData = await albumsRes.json();
+    if (!albumsData.data?.length) return [];
+
+    const filtered = albumsData.data.filter((a: any) => a.record_type === 'album' || a.record_type === 'ep');
+
+    // Busca detalhes de cada álbum para pegar trackCount real
+    const albums = await Promise.all(filtered.map(async (a: any) => {
+      try {
+        const detail = await (await fetch(`${this.DEEZER}/album/${a.id}`)).json();
+        const trackCount = detail.tracks?.data?.length ?? detail.nb_tracks ?? a.nb_tracks ?? 0;
+        return {
+          id: String(a.id),
+          title: a.title ?? '',
+          coverUrl: a.cover_xl ?? a.cover_big ?? a.cover ?? '',
+          releaseDate: a.release_date ?? '',
+          trackCount,
+        };
+      } catch {
+        return {
+          id: String(a.id),
+          title: a.title ?? '',
+          coverUrl: a.cover_xl ?? a.cover_big ?? a.cover ?? '',
+          releaseDate: a.release_date ?? '',
+          trackCount: a.nb_tracks ?? 0,
+        };
+      }
+    }));
+
+    // Marca álbuns que já têm todas as faixas importadas
+    const results = await Promise.all(albums.map(async (a) => {
+      const existingCount = await this.prisma.song.count({
+        where: { albumName: { equals: a.title, mode: 'insensitive' }, available: true },
+      });
+      return { ...a, alreadyImported: a.trackCount > 0 && existingCount >= a.trackCount };
+    }));
+
+    return results;
+  }
+
+  // ── Import all albums of an artist ───────────────────────────────────────
+
+  async magicImportAllArtistAlbums(
+    userId: string,
+    artistName: string,
+    albumIds: string[],
+    jobId: string,
+  ): Promise<MagicImportResult> {
+    const allTracks: { id: string; title: string; artist: string; album: string; coverUrl: string; durationMs: number }[] = [];
+    let skippedAlbums = 0;
+    let failedAlbums = 0;
+
+    for (const albumId of albumIds) {
+      try {
+        const albumRes = await fetch(`${this.DEEZER}/album/${albumId}`);
+        if (!albumRes.ok) {
+          console.error(`[MagicImport] Deezer album fetch failed: status ${albumRes.status} for album ${albumId}`);
+          failedAlbums++;
+          continue;
+        }
+        
+        const alb = await albumRes.json();
+        if (alb.error) {
+          console.error(`[MagicImport] Deezer API error for album ${albumId}:`, alb.error);
+          failedAlbums++;
+          continue;
+        }
+        
+        const albumTitle = alb.title ?? '';
+        const coverUrl = alb.cover_xl ?? alb.cover_big ?? alb.cover ?? '';
+        const tracks = alb.tracks?.data ?? [];
+
+        if (!tracks.length) {
+          console.warn(`[MagicImport] Album "${albumTitle}" has no tracks`);
+          skippedAlbums++;
+          continue;
+        }
+
+        // Pula álbum se todas as faixas já existem no banco
+        const existingCount = await this.prisma.song.count({
+          where: { albumName: { equals: albumTitle, mode: 'insensitive' }, available: true },
+        });
+        if (existingCount >= tracks.length) {
+          console.log(`[MagicImport] Album "${albumTitle}" already fully imported (${existingCount}/${tracks.length})`);
+          skippedAlbums++;
+          continue;
+        }
+
+        for (const t of tracks) {
+          allTracks.push({
+            id: String(t.id),
+            title: t.title ?? '',
+            artist: t.artist?.name ?? artistName,
+            album: albumTitle,
+            coverUrl,
+            durationMs: (t.duration ?? 0) * 1000,
+          });
+        }
+        console.log(`[MagicImport] Added ${tracks.length} tracks from album "${albumTitle}"`);
+      } catch (err) {
+        console.error(`[MagicImport] Error fetching album ${albumId}:`, err instanceof Error ? err.message : String(err));
+        failedAlbums++;
+      }
+    }
+
+    if (!allTracks.length) {
+      this.emitProgress({ jobId, track: '', trackIndex: 0, totalTracks: 0, percent: 100, status: 'done', done: true });
+      return { imported: 0, skipped: skippedAlbums, errors: failedAlbums, tracks: [] };
+    }
+
+    const result = await this.magicImportArtistTracks(userId, allTracks, jobId);
+    return { ...result, skipped: result.skipped + skippedAlbums, errors: result.errors + failedAlbums };
+  }
+
+  // ── Import selected artist tracks ─────────────────────────────────────────
+
+  async magicImportArtistTracks(
+    userId: string,
+    tracks: { id: string; title: string; artist: string; album: string; coverUrl: string; durationMs: number }[],
+    jobId: string,
+  ): Promise<MagicImportResult> {
+    const total = tracks.length;
+    let imported = 0, skipped = 0, errors = 0;
+    const results: { title: string; status: string }[] = new Array(total);
+    let completed = 0;
+
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'magic-artist-'));
+
+    // Pre-download cover once per unique coverUrl to avoid redundant fetches
+    const coverCache = new Map<string, Buffer | undefined>();
+    const uniqueCovers = [...new Set(tracks.map(t => t.coverUrl).filter(Boolean))];
+    await Promise.all(uniqueCovers.map(async (url) => {
+      try { coverCache.set(url, Buffer.from(await (await fetch(url)).arrayBuffer())); } catch { coverCache.set(url, undefined); }
+    }));
+
+    const processTrack = async (t: typeof tracks[0], i: number) => {
+      this.emitProgress({ jobId, track: t.title, trackIndex: i, totalTracks: total, percent: Math.round((completed / total) * 100), status: 'downloading' });
+
+      const existing = await this.prisma.song.findFirst({
+        where: { title: { equals: t.title, mode: 'insensitive' }, artist: { equals: t.artist, mode: 'insensitive' } },
+      });
+      if (existing?.available) {
+        results[i] = { title: t.title, status: 'skipped (already exists)' };
+        completed++;
+        skipped++;
+        this.emitProgress({ jobId, track: t.title, trackIndex: i, totalTracks: total, percent: Math.round((completed / total) * 100), status: 'done' });
+        return;
+      }
+
+      try {
+        const ytUrl = await this.findYoutubeUrl('', t.artist, t.title);
+        if (!ytUrl) throw new Error('No YouTube URL found');
+
+        const safeTitle = t.title.replace(/[<>:"/\\|?*\u0080-\uffff]/g, '_').trim();
+        const trackDir = path.join(tmpDir, `${i}-${safeTitle}`);
+        await fs.mkdir(trackDir, { recursive: true });
+        const outputTemplate = path.join(trackDir, 'audio.%(ext)s');
+
+        // Download + fetch lyrics in parallel
+        const [, lyrics] = await Promise.all([
+          this.downloadTrack(ytUrl, outputTemplate),
+          this.fetchLyrics(t.title, t.artist),
+        ]);
+
+        const files = await fs.readdir(trackDir);
+        if (!files.length) throw new Error('Download failed');
+
+        const finalPath = path.join(trackDir, files[0]);
+        const mp3Path = finalPath.endsWith('.mp3') ? finalPath : finalPath.replace(/\.[^.]+$/, '.mp3');
+        if (finalPath !== mp3Path) await fs.rename(finalPath, mp3Path);
+
+        const coverBuffer = coverCache.get(t.coverUrl);
+        this.tagMp3(mp3Path, { title: t.title, artist: t.artist, album: t.album, year: '', genre: '', trackNumber: 1, lyrics, coverBuffer });
+
+        this.emitProgress({ jobId, track: t.title, trackIndex: i, totalTracks: total, percent: Math.round((completed / total) * 100), status: 'uploading' });
+
+        const fileBuffer = await fs.readFile(mp3Path);
+        const safeArtist = t.artist.replace(/[^a-zA-Z0-9 _-]/g, '_');
+        const safeAlbum = (t.album || 'Singles').replace(/[^a-zA-Z0-9 _-]/g, '_');
+        const s3Key = `${safeArtist}/${safeAlbum}/${safeTitle}.mp3`;
+        const storagePath = await this.s3Adapter.upload(fileBuffer, s3Key, 'audio/mpeg');
+
+        const songData = { title: t.title, artist: t.artist, albumName: t.album || null, coverUrl: t.coverUrl || null, duration: Math.round(t.durationMs / 1000), storageType: StorageType.s3, storagePath, mimeType: 'audio/mpeg', available: true, uploadedBy: userId, ...(lyrics && { lyrics }) };
+
+        if (existing) {
+          await this.prisma.song.update({ where: { id: existing.id }, data: songData });
+        } else {
+          await this.prisma.song.create({ data: { ...songData, fileSize: BigInt(fileBuffer.length) } });
+        }
+
+        results[i] = { title: t.title, status: 'imported' };
+        completed++;
+        imported++;
+        this.emitProgress({ jobId, track: t.title, trackIndex: i, totalTracks: total, percent: Math.round((completed / total) * 100), status: 'done' });
+      } catch (err: any) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[MagicImport] Track import error - ${t.artist} - ${t.title}: ${errMsg}`);
+        results[i] = { title: t.title, status: `error: ${err.message}` };
+        completed++;
+        errors++;
+        this.emitProgress({ jobId, track: t.title, trackIndex: i, totalTracks: total, percent: Math.round((completed / total) * 100), status: 'error', message: err.message });
+      }
+    };
+
+    // Concurrency pool: 3 parallel downloads
+    const CONCURRENCY = 3;
+    try {
+      const queue = tracks.map((t, i) => () => processTrack(t, i));
+      const workers = Array.from({ length: CONCURRENCY }, async () => {
+        while (queue.length) {
+          const task = queue.shift();
+          if (task) await task();
+        }
+      });
+      await Promise.all(workers);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    this.emitProgress({ jobId, track: '', trackIndex: total, totalTracks: total, percent: 100, status: 'done', done: true });
+    this.progressSubs.delete(jobId);
+
+    return { imported, skipped, errors, tracks: results };
+  }
+
   // ── Deezer album search ───────────────────────────────────────────────────
 
   private async deezerSearchAlbum(artist: string, album: string) {
@@ -139,8 +397,20 @@ export class MagicImportService {
   // ── yt-dlp runner ────────────────────────────────────────────────────────────
 
   private get ffmpegPath(): string {
-    return this.config.get<string>('FFMPEG_PATH') ??
-      'C:\\Users\\ytalo\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\imageio_ffmpeg\\binaries\\ffmpeg-win-x86_64-v7.1.exe';
+    const configured = this.config.get<string>('FFMPEG_PATH');
+    if (configured?.trim()) return configured.trim();
+    // fallback: WinGet install location
+    return 'C:\\Users\\ytalo\\AppData\\Local\\Microsoft\\WinGet\\Links\\ffmpeg.exe';
+  }
+
+  /** Returns the directory containing ffmpeg (yt-dlp --ffmpeg-location accepts dir or exe path) */
+  private get ffmpegDir(): string {
+    const p = this.ffmpegPath;
+    // If it ends with .exe, return the directory
+    if (p.toLowerCase().endsWith('.exe')) {
+      return path.dirname(p);
+    }
+    return p;
   }
 
   private get nodePath(): string {
@@ -148,10 +418,9 @@ export class MagicImportService {
   }
 
   private runYtDlp(args: string[]): Promise<{ stdout: string; stderr: string }> {
-    // Pass ffmpeg and node paths as single --key=value args to avoid shell splitting on spaces
     const fullArgs = [
-      `--ffmpeg-location=${this.ffmpegPath}`,
-      `--js-runtimes=node:${this.nodePath}`,
+      '--ffmpeg-location', this.ffmpegDir,
+      '--js-runtimes', `node:${this.nodePath}`,
       ...args,
     ];
 
@@ -182,32 +451,48 @@ export class MagicImportService {
   // ── YouTube download via yt-dlp ───────────────────────────────────────────
 
   private async findYoutubeUrl(isrc: string, artist: string, title: string): Promise<string> {
-    const queries = [
-      isrc ? `ytsearch1:${isrc}` : null,
-      `ytsearch1:${artist} - ${title} official audio`,
-      `ytsearch1:${artist} ${title}`,
-    ].filter(Boolean) as string[];
+    // 1. Try YouTube Data API first (fast, no subprocess)
+    const ytApiKey = this.config.get<string>('YOUTUBE_KEY') ?? this.config.get<string>('YOUTUBE_API_KEY');
+    if (ytApiKey) {
+      const queries = [
+        isrc?.trim() ? isrc : null,
+        `${artist} - ${title} official audio`,
+        `${artist} ${title}`,
+      ].filter(Boolean) as string[];
 
-    for (const q of queries) {
-      try {
-        const { stdout } = await this.runYtDlp(['--get-id', '--no-playlist', '--quiet', '--', q]);
-        const id = stdout.trim().split('\n')[0];
-        if (id) return `https://youtu.be/${id}`;
-      } catch { /* try next */ }
+      for (const q of queries) {
+        try {
+          const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&q=${encodeURIComponent(q)}&key=${ytApiKey}&maxResults=1`;
+          const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+          const data = await res.json();
+          const id = data?.items?.[0]?.id?.videoId;
+          if (id) return `https://youtu.be/${id}`;
+        } catch { /* try next */ }
+      }
     }
+
+    // 2. Fallback: yt-dlp search (only first query to save time)
+    const q = `ytsearch1:${artist} - ${title}`;
+    try {
+      const { stdout } = await this.runYtDlp(['--get-id', '--no-playlist', '--quiet', '--', q]);
+      const id = stdout.trim().split('\n')[0];
+      if (id) return `https://youtu.be/${id}`;
+    } catch { /* ignore */ }
+
     return '';
   }
 
   private async downloadTrack(ytUrl: string, outputTemplate: string): Promise<void> {
     await this.runYtDlp([
       `--output=${outputTemplate}`,
-      '--format=bestaudio/best',
+      '--format=bestaudio[abr<=128]/bestaudio/best',
       '--quiet',
       '--no-warnings',
       '--extract-audio',
       '--audio-format=mp3',
-      '--audio-quality=192',
+      '--audio-quality=128K',
       '--no-playlist',
+      '--concurrent-fragments=4',
       ytUrl,
     ]);
   }

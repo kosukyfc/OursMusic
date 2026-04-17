@@ -5,6 +5,10 @@ export class CreatePlaylistDto {
   @IsString()
   title: string;
 
+  @IsString()
+  @IsOptional()
+  coverUrl?: string;
+
   @IsBoolean()
   @IsOptional()
   isPublic?: boolean;
@@ -14,6 +18,10 @@ export class UpdatePlaylistDto {
   @IsString()
   @IsOptional()
   title?: string;
+
+  @IsString()
+  @IsOptional()
+  coverUrl?: string;
 
   @IsBoolean()
   @IsOptional()

@@ -35,10 +35,27 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _deviceSync = DeviceSyncService(_player);
     _deviceSync.connect();
+    _deviceSync.addListener(_onDeviceSyncChange);
     _loadSongs();
     _downloads.loadDownloads();
     _loadUserPlan();
     favoritesService.load();
+  }
+
+  void _onDeviceSyncChange() {
+    final newPlan = _deviceSync.updatedPlan;
+    if (newPlan != null && newPlan != _userPlan && mounted) {
+      setState(() => _userPlan = newPlan);
+      _deviceSync.clearUpdatedPlan();
+      final isPremium = newPlan == 'premium' || newPlan == 'family';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(isPremium
+          ? '🎉 Plano atualizado para \!'
+          : 'Plano alterado para \.'),
+        backgroundColor: isPremium ? const Color(0xFF1DB954) : const Color(0xFF2A2A2A),
+        duration: const Duration(seconds: 4),
+      ));
+    }
   }
 
   Future<void> _loadUserPlan() async {
@@ -52,6 +69,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _deviceSync.removeListener(_onDeviceSyncChange);
     _deviceSync.dispose();
     _player.dispose();
     super.dispose();
@@ -150,6 +168,7 @@ class _HomeScreenState extends State<HomeScreen> {
               current: _tab,
               onTap: (i) => setState(() => _tab = i),
               onLogout: widget.onLogout,
+              player: _player,
             ),
             // Main content
             Expanded(child: tabs[_tab]),
@@ -203,8 +222,9 @@ class _TabletSidebar extends StatelessWidget {
   final int current;
   final ValueChanged<int> onTap;
   final VoidCallback onLogout;
+  final PlayerController player;
   const _TabletSidebar(
-      {required this.current, required this.onTap, required this.onLogout});
+      {required this.current, required this.onTap, required this.onLogout, required this.player});
 
   @override
   Widget build(BuildContext context) {
@@ -276,7 +296,7 @@ class _TabletSidebar extends StatelessWidget {
             onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                    builder: (_) => ProfileScreen(onLogout: onLogout))),
+                    builder: (_) => ProfileScreen(onLogout: onLogout, player: player))),
             dense: true,
           ),
           ListTile(
@@ -505,7 +525,7 @@ class _HomeContent extends StatelessWidget {
             onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                    builder: (_) => ProfileScreen(onLogout: onLogout))),
+                    builder: (_) => ProfileScreen(onLogout: onLogout, player: player))),
             child: Padding(
               padding: const EdgeInsets.only(right: 12),
               child: PremiumAvatar(
